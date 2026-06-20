@@ -1,0 +1,38 @@
+# Shadow Span AppSec — pre-commit framework hooks (https://pre-commit.com).
+# Add to your repo's .pre-commit-config.yaml:
+#
+#   repos:
+#     - repo: https://github.com/shadow-span/shadow-span-cli
+#       rev: v0.1.0
+#       hooks:
+#         - id: shadowspan-secrets
+#
+# These run LOCALLY. Secret values never leave your machine (gitleaks --redact +
+# normalizer drop). Reporting is opt-in and off by default on the pre-commit path.
+# Bypass a single commit with: SKIP=shadowspan-secrets git commit ...
+
+- id: shadowspan-secrets
+  name: Shadow Span — secret scan (local, blocks on secrets)
+  description: Stop secrets from being committed. Fully local; secret values never leave the machine.
+  entry: shadow-span scan --staged --engines secret --no-report --fail-on critical
+  language: node
+  pass_filenames: false
+  stages: [pre-commit]
+
+- id: shadowspan
+  name: Shadow Span — secrets + SAST (local)
+  description: Secrets + fast static analysis on staged changes. Local-only by default.
+  entry: shadow-span scan --staged --no-report --fail-on high
+  language: node
+  pass_filenames: false
+  stages: [pre-commit]
+
+# Alert-only variant — surfaces findings but NEVER blocks the commit (exit 0).
+# Use this while rolling the hook out to a team, then switch to the blocking id.
+- id: shadowspan-secrets-alert
+  name: Shadow Span — secret scan (local, alert-only / non-blocking)
+  description: Warns on secrets but does not block the commit (--mode alert).
+  entry: shadow-span scan --staged --engines secret --no-report --mode alert
+  language: node
+  pass_filenames: false
+  stages: [pre-commit]

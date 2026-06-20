@@ -1,0 +1,160 @@
+# C++ SAST rules — our own ast-grep rule pack (MIT engine). Mirrors the C
+# unsafe-function/injection sinks in the cpp dialect, plus std:: variants.
+# Same context+selector:call_expression idiom for the call/declarator ambiguity.
+
+id: cpp-command-system
+language: cpp
+severity: error
+message: system() runs a string through /bin/sh — a command-injection sink with any non-constant input (CWE-78).
+rule:
+  pattern:
+    context: "void f(){ system($X); }"
+    selector: call_expression
+---
+id: cpp-command-popen
+language: cpp
+severity: error
+message: popen() runs a string through the shell — a command-injection sink with any non-constant input (CWE-78).
+rule:
+  pattern:
+    context: "void f(){ popen($CMD, $MODE); }"
+    selector: call_expression
+
+# ── Unsafe memory functions (CWE-120 / CWE-242 / CWE-787) ───────────────────
+---
+id: cpp-unsafe-strcpy
+language: cpp
+severity: error
+message: strcpy()/strcat() perform no bounds checking — classic buffer-overflow sinks. Use strlcpy/strncpy with explicit sizes (CWE-120).
+rule:
+  any:
+    - pattern:
+        context: "void f(){ strcpy($D, $S); }"
+        selector: call_expression
+    - pattern:
+        context: "void f(){ strcat($D, $S); }"
+        selector: call_expression
+---
+id: cpp-unsafe-sprintf
+language: cpp
+severity: error
+message: sprintf()/vsprintf() have no output-bounds limit — buffer-overflow sink. Use snprintf/vsnprintf with a size (CWE-120).
+rule:
+  any:
+    - pattern:
+        context: "void f(){ sprintf($B, $$$A); }"
+        selector: call_expression
+    - pattern:
+        context: "void f(){ vsprintf($B, $$$A); }"
+        selector: call_expression
+---
+id: cpp-unsafe-gets
+language: cpp
+severity: error
+message: gets() cannot be used safely — it has no bounds limit and is removed from C11. Use fgets() (CWE-242).
+rule:
+  pattern:
+    context: "void f(){ gets($X); }"
+    selector: call_expression
+
+# ── Format string (CWE-134) ─────────────────────────────────────────────────
+---
+id: cpp-format-string-printf
+language: cpp
+severity: warning
+message: printf/fprintf/syslog with a non-constant format string is a format-string vulnerability — use a literal "%s" format (CWE-134).
+rule:
+  any:
+    - pattern:
+        context: "void f(){ printf($X); }"
+        selector: call_expression
+    - pattern:
+        context: "void f(){ syslog($PRIO, $X); }"
+        selector: call_expression
+constraints:
+  X: { not: { kind: string_literal } }
+
+# ── Weak crypto (CWE-327) ───────────────────────────────────────────────────
+---
+id: cpp-weak-hash-md5
+language: cpp
+severity: warning
+message: MD5 is cryptographically broken — use SHA-256+ for security contexts (CWE-327).
+rule:
+  any:
+    - pattern:
+        context: "void f(){ MD5_Init($X); }"
+        selector: call_expression
+    - pattern:
+        context: "void f(){ MD5($$$A); }"
+        selector: call_expression
+---
+id: cpp-weak-hash-sha1
+language: cpp
+severity: warning
+message: SHA-1 is cryptographically broken — use SHA-256+ for security contexts (CWE-327).
+rule:
+  any:
+    - pattern:
+        context: "void f(){ SHA1_Init($X); }"
+        selector: call_expression
+    - pattern:
+        context: "void f(){ SHA1($$$A); }"
+        selector: call_expression
+
+# ── Insecure randomness (CWE-338) ───────────────────────────────────────────
+---
+id: cpp-insecure-rand
+language: cpp
+severity: info
+message: rand()/random() are not cryptographically secure — use a CSPRNG (getrandom/arc4random) for tokens, keys, or nonces (CWE-338).
+rule:
+  any:
+    - pattern:
+        context: "void f(){ rand(); }"
+        selector: call_expression
+    - pattern:
+        context: "void f(){ random(); }"
+        selector: call_expression
+
+# ── Disabled TLS verification (CWE-295) ─────────────────────────────────────
+---
+id: cpp-tls-curl-verify-disabled
+language: cpp
+severity: error
+message: Setting CURLOPT_SSL_VERIFYPEER/VERIFYHOST to 0 disables TLS certificate validation, enabling MITM (CWE-295).
+rule:
+  any:
+    - pattern:
+        context: "void f(){ curl_easy_setopt($H, CURLOPT_SSL_VERIFYPEER, 0); }"
+        selector: call_expression
+    - pattern:
+        context: "void f(){ curl_easy_setopt($H, CURLOPT_SSL_VERIFYHOST, 0); }"
+        selector: call_expression
+---
+id: cpp-tls-openssl-verify-none
+language: cpp
+severity: error
+message: SSL_CTX_set_verify(..., SSL_VERIFY_NONE, ...) disables certificate validation, enabling MITM (CWE-295).
+rule:
+  pattern:
+    context: "void f(){ SSL_CTX_set_verify($CTX, SSL_VERIFY_NONE, $CB); }"
+    selector: call_expression
+---
+id: cpp-command-system-std
+language: cpp
+severity: error
+message: std::system() runs a string through the shell — a command-injection sink with any non-constant input (CWE-78).
+rule:
+  pattern:
+    context: "void f(){ std::system($X); }"
+    selector: call_expression
+---
+id: cpp-insecure-rand-std
+language: cpp
+severity: info
+message: std::rand() is not cryptographically secure — use <random> with a CSPRNG seed or arc4random for tokens/keys (CWE-338).
+rule:
+  pattern:
+    context: "void f(){ std::rand(); }"
+    selector: call_expression

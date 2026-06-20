@@ -1,0 +1,33 @@
+# Shadow Span AppSec — GitLab CI template.
+#
+# Use it in your .gitlab-ci.yml:
+#   include:
+#     - remote: 'https://raw.githubusercontent.com/shadow-span/shadow-span-cli/v1/ci/gitlab/shadow-span.gitlab-ci.yml'
+#
+# Required CI/CD variable (Settings → CI/CD → Variables, masked):
+#   SHADOWSPAN_API_KEY        — API key with the WRITE_APPSEC scope
+# Optional (for inline MR discussions — CI_JOB_TOKEN usually can't post notes):
+#   SHADOWSPAN_GITLAB_TOKEN   — a Project/Group Access Token with `api` scope
+# Tunable:
+#   SHADOWSPAN_FAIL_ON        — none|low|medium|high|critical (default: high)
+
+shadow-span-appsec:
+  stage: test
+  image: ghcr.io/shadow-span/shadow-span-cli:1   # engines pre-installed
+  variables:
+    SHADOWSPAN_FAIL_ON: "high"
+  script:
+    - shadow-span scan
+        --report
+        --comment-pr
+        --source gitlab-ci
+        --fail-on "$SHADOWSPAN_FAIL_ON"
+        --gitlab-report gl-code-quality.json
+  artifacts:
+    when: always
+    reports:
+      # Renders findings in the MR widget on ALL GitLab tiers — no token needed.
+      codequality: gl-code-quality.json
+  rules:
+    # Run on merge requests; the failed job → red MR pipeline = the gate.
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'

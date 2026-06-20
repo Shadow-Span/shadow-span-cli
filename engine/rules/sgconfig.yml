@@ -1,0 +1,4 @@
+# ast-grep project config for the AppSec SAST rule packs. Our own rules,
+# authored against the OWASP Top 10 / CWE Top 25 for coverage.
+ruleDirs:
+  - sast

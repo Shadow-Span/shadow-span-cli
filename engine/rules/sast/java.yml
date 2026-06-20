@@ -1,0 +1,115 @@
+# Java SAST rules — our own ast-grep rule pack (MIT engine).
+# Coverage guide: OWASP Top 10 / CWE Top 25. error → HIGH, warning → MEDIUM.
+
+# ── Command injection (CWE-78) ──────────────────────────────────────────────
+id: java-runtime-exec
+language: java
+severity: error
+message: Runtime.exec with a built command string is a command-injection sink — use ProcessBuilder with an argv list and no shell (CWE-78).
+rule:
+  any:
+    - pattern: Runtime.getRuntime().exec($X)
+    - pattern: $RT.exec($X)
+constraints:
+  X: { kind: binary_expression }
+
+# ── SQL injection (CWE-89) ──────────────────────────────────────────────────
+---
+id: java-sql-statement-concat
+language: java
+severity: error
+message: JDBC Statement executed with a concatenated SQL string interpolates values into the query — use a PreparedStatement with bind parameters (CWE-89).
+rule:
+  any:
+    - pattern: $ST.executeQuery($A + $B)
+    - pattern: $ST.executeUpdate($A + $B)
+    - pattern: $ST.execute($A + $B)
+
+# ── Unsafe deserialization (CWE-502) ────────────────────────────────────────
+---
+id: java-object-input-stream
+language: java
+severity: error
+message: Deserializing untrusted data with ObjectInputStream.readObject executes gadget chains — remote code execution (CWE-502).
+rule: { pattern: new ObjectInputStream($X) }
+---
+id: java-xmldecoder
+language: java
+severity: error
+message: java.beans.XMLDecoder on untrusted XML instantiates arbitrary classes — remote code execution (CWE-502).
+rule: { pattern: new XMLDecoder($$$A) }
+
+# ── XXE (CWE-611) ───────────────────────────────────────────────────────────
+---
+id: java-xxe-disallow-doctype-false
+language: java
+severity: error
+message: Setting the disallow-doctype-decl feature to false (or not enabling it) leaves the XML parser open to XXE — enable it / disable external entities (CWE-611).
+rule:
+  pattern: $F.setFeature("http://apache.org/xml/features/disallow-doctype-decl", false)
+
+# ── Weak crypto (CWE-327) ───────────────────────────────────────────────────
+---
+id: java-weak-hash-md5
+language: java
+severity: warning
+message: MD5 is cryptographically broken — use SHA-256+ for security contexts (CWE-327).
+rule: { pattern: MessageDigest.getInstance("MD5") }
+---
+id: java-weak-hash-sha1
+language: java
+severity: warning
+message: SHA-1 is cryptographically broken — use SHA-256+ for security contexts (CWE-327).
+rule: { pattern: MessageDigest.getInstance("SHA-1") }
+---
+id: java-weak-cipher
+language: java
+severity: warning
+message: Weak/ECB cipher transformation — use AES/GCM (authenticated) instead of DES/3DES/RC4/Blowfish or ECB mode (CWE-327).
+rule:
+  pattern: Cipher.getInstance($ALG)
+constraints:
+  ALG: { regex: "(?i)(des|ecb|rc4|blowfish)" }
+
+# ── Disabled TLS verification (CWE-295) ─────────────────────────────────────
+---
+id: java-tls-allow-all-hostnames
+language: java
+severity: error
+message: NoopHostnameVerifier / ALLOW_ALL hostname verification disables TLS hostname checks, enabling MITM (CWE-295).
+rule:
+  any:
+    - pattern: new NoopHostnameVerifier()
+    - pattern: NoopHostnameVerifier.INSTANCE
+    - pattern: SSLConnectionSocketFactory.ALLOW_ALL_HOSTNAME_VERIFIER
+
+# ── Insecure randomness (CWE-330) ───────────────────────────────────────────
+---
+id: java-insecure-random
+language: java
+severity: warning
+message: java.util.Random is predictable — use java.security.SecureRandom for tokens, keys, nonces, or IDs (CWE-330).
+rule: { pattern: new Random($$$A) }
+
+# ── SSRF (CWE-918) ──────────────────────────────────────────────────────────
+---
+id: java-ssrf-url-concat
+language: java
+severity: warning
+message: URL/connection opened to an address built by string concatenation may be attacker-controlled (SSRF) — validate the host against an allowlist (CWE-918).
+rule:
+  any:
+    - pattern: new URL($A + $B)
+    - pattern: new URI($A + $B)
+
+# ── Path traversal (CWE-22) ─────────────────────────────────────────────────
+---
+id: java-path-traversal-concat
+language: java
+severity: warning
+message: File path built by string concatenation may escape the intended directory (path traversal) — canonicalize and confine under a base directory (CWE-22).
+rule:
+  any:
+    - pattern: new File($A + $B)
+    - pattern: new FileInputStream($A + $B)
+    - pattern: new FileReader($A + $B)

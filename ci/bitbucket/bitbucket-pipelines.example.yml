@@ -1,0 +1,22 @@
+# Shadow Span AppSec — Bitbucket Pipelines example.
+#
+# Copy this step into your bitbucket-pipelines.yml. The CLI runs our engines in
+# the step, gates the build via exit code, and (with a token) posts Code Insights
+# annotations in the PR diff + a PR summary comment.
+#
+# Repository variables (Repository settings → Repository variables, secured):
+#   SHADOWSPAN_API_KEY          — API key with the WRITE_APPSEC scope
+#   SHADOWSPAN_BITBUCKET_TOKEN  — repo/workspace access token (for Code Insights + PR comment)
+#
+# Bitbucket sets BITBUCKET_WORKSPACE / BITBUCKET_REPO_SLUG / BITBUCKET_COMMIT /
+# BITBUCKET_PR_ID automatically — the CLI reads them.
+
+image: ghcr.io/shadow-span/shadow-span-cli:1   # engines pre-installed
+
+pipelines:
+  pull-requests:
+    '**':
+      - step:
+          name: Shadow Span AppSec
+          script:
+            - shadow-span scan --report --comment-pr --source bitbucket-pipeline --fail-on high

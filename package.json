@@ -1,0 +1,47 @@
+{
+  "name": "shadow-span-cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Run Shadow Span's application-security checks (SAST / SCA / secrets / IaC) in your own pipeline — pre-commit and CI. Engines run locally, your source never leaves your infrastructure, and findings are normalized to Shadow Span's format and optionally reported to the platform.",
+  "keywords": [
+    "appsec",
+    "sast",
+    "sca",
+    "secrets",
+    "iac",
+    "security",
+    "ci",
+    "pre-commit",
+    "vulnerability-scanner",
+    "devsecops"
+  ],
+  "homepage": "https://github.com/Shadow-Span/shadow-span-cli#readme",
+  "bugs": {
+    "url": "https://github.com/Shadow-Span/shadow-span-cli/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Shadow-Span/shadow-span-cli.git"
+  },
+  "license": "MIT",
+  "author": "Shadow Span",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "shadow-span": "bin/shadow-span.js"
+  },
+  "exports": {
+    ".": "./src/cli.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "engine",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "scripts": {
+    "test": "vitest run src/__tests__"
+  }
+}

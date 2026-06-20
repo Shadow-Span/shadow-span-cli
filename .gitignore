@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Build / pack output
+dist/
+build/
+*.tgz
+
+# Test & coverage
+coverage/
+.nyc_output/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Local env / secrets — never commit an API key
+.env
+.env.*
+!.env.example
+
+# Engine binaries are installed on PATH (or baked into the Docker image),
+# never vendored into the repo. The engine/ JS kernel + rule packs ARE source.
+bin/vendor/
+
+# OS / editor cruft
+.DS_Store
+*.swp
+.idea/
+.vscode/

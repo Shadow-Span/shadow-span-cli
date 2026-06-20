@@ -1,0 +1,132 @@
+# C# SAST rules — our own ast-grep rule pack (MIT engine).
+# Coverage guide: OWASP Top 10 / CWE Top 25. error → HIGH, warning → MEDIUM.
+
+# ── Command injection (CWE-78) ──────────────────────────────────────────────
+id: csharp-process-start
+language: csharp
+severity: warning
+message: Process.Start with a non-constant filename/arguments can execute attacker-controlled commands — validate against an allowlist (CWE-78).
+rule:
+  any:
+    - pattern: Process.Start($X)
+    - pattern: System.Diagnostics.Process.Start($X)
+    - pattern: Process.Start($X, $ARGS)
+
+# ── SQL injection (CWE-89) ──────────────────────────────────────────────────
+---
+id: csharp-sql-concat
+language: csharp
+severity: error
+message: SqlCommand built by string concatenation interpolates values into SQL — use parameterized commands with SqlParameter (CWE-89).
+rule:
+  any:
+    - pattern: new SqlCommand($A + $B)
+    - pattern: new SqlCommand($A + $B, $$$R)
+---
+id: csharp-sql-interpolated
+language: csharp
+severity: error
+message: SqlCommand built from an interpolated string injects values into SQL — use parameterized commands with SqlParameter (CWE-89).
+rule:
+  all:
+    - pattern: new SqlCommand($$$ARGS)
+    - has:
+        kind: interpolated_string_expression
+        stopBy: end
+
+# ── Unsafe deserialization (CWE-502) ────────────────────────────────────────
+---
+id: csharp-insecure-deserializer
+language: csharp
+severity: error
+message: BinaryFormatter/SoapFormatter/NetDataContractSerializer/LosFormatter on untrusted data execute gadget chains — use System.Text.Json or DataContractSerializer with known types (CWE-502).
+rule:
+  any:
+    - pattern: new BinaryFormatter()
+    - pattern: new SoapFormatter()
+    - pattern: new NetDataContractSerializer()
+    - pattern: new LosFormatter()
+
+# ── XXE (CWE-611) ───────────────────────────────────────────────────────────
+---
+id: csharp-xxe-dtd-parse
+language: csharp
+severity: error
+message: DtdProcessing.Parse enables DTD/external-entity processing — an XXE sink. Use DtdProcessing.Prohibit and a null XmlResolver (CWE-611).
+rule: { pattern: DtdProcessing.Parse }
+
+# ── Weak crypto (CWE-327) ───────────────────────────────────────────────────
+---
+id: csharp-weak-hash-md5
+language: csharp
+severity: warning
+message: MD5 is cryptographically broken — use SHA256 for security contexts (CWE-327).
+rule:
+  any:
+    - pattern: MD5.Create()
+    - pattern: new MD5CryptoServiceProvider()
+---
+id: csharp-weak-hash-sha1
+language: csharp
+severity: warning
+message: SHA-1 is cryptographically broken — use SHA256 for security contexts (CWE-327).
+rule:
+  any:
+    - pattern: SHA1.Create()
+    - pattern: new SHA1CryptoServiceProvider()
+---
+id: csharp-weak-cipher-des
+language: csharp
+severity: warning
+message: DES/3DES is obsolete and weak — use AES (Aes.Create) with an authenticated mode (CWE-327).
+rule:
+  any:
+    - pattern: DES.Create()
+    - pattern: new DESCryptoServiceProvider()
+    - pattern: TripleDES.Create()
+
+# ── Disabled TLS verification (CWE-295) ─────────────────────────────────────
+---
+id: csharp-tls-accept-all-certs
+language: csharp
+severity: error
+message: Assigning a custom server-certificate validation callback (commonly "return true") disables TLS validation, enabling MITM (CWE-295).
+rule:
+  any:
+    - pattern:
+        context: "class C { void m(){ ServicePointManager.ServerCertificateValidationCallback = $X; } }"
+        selector: assignment_expression
+    - pattern:
+        context: "class C { void m(){ $H.ServerCertificateCustomValidationCallback = $X; } }"
+        selector: assignment_expression
+
+# ── Insecure randomness (CWE-338) ───────────────────────────────────────────
+---
+id: csharp-insecure-random
+language: csharp
+severity: warning
+message: System.Random is predictable — use RandomNumberGenerator for tokens, keys, nonces, or IDs (CWE-338).
+rule: { pattern: new Random($$$A) }
+
+# ── SSRF (CWE-918) ──────────────────────────────────────────────────────────
+---
+id: csharp-ssrf-url-concat
+language: csharp
+severity: warning
+message: Request to a URL built by string concatenation may be attacker-controlled (SSRF) — validate the host against an allowlist (CWE-918).
+rule:
+  any:
+    - pattern: WebRequest.Create($A + $B)
+    - pattern: new Uri($A + $B)
+
+# ── Path traversal (CWE-22) ─────────────────────────────────────────────────
+---
+id: csharp-path-traversal-concat
+language: csharp
+severity: warning
+message: File path built by string concatenation may escape the intended directory (path traversal) — canonicalize with Path.GetFullPath and confine under a base directory (CWE-22).
+rule:
+  any:
+    - pattern: File.ReadAllText($A + $B)
+    - pattern: File.ReadAllBytes($A + $B)
+    - pattern: File.OpenRead($A + $B)

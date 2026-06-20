@@ -1,0 +1,203 @@
+# Python SAST rules — our own ast-grep rule pack (MIT engine).
+# Coverage guide: OWASP Top 10 / CWE Top 25. error → HIGH, warning → MEDIUM,
+# info → LOW. Keyword-argument sinks (shell=True / verify=False) match the
+# keyword_argument node via context+selector so they fire regardless of arg
+# position — a plain `f($$$, shell=True, $$$)` pattern silently misses the
+# common case where the kwarg is last.
+
+# ── Code injection (CWE-95) ─────────────────────────────────────────────────
+id: py-eval-call
+language: python
+severity: error
+message: eval() runs arbitrary code — code-injection sink with any non-constant input (CWE-95).
+rule:
+  pattern: eval($ARG)
+---
+id: py-exec-call
+language: python
+severity: error
+message: exec() runs arbitrary code — code-injection sink with any non-constant input (CWE-95).
+rule:
+  pattern: exec($ARG)
+
+# ── Server-side template injection (CWE-94) ─────────────────────────────────
+---
+id: py-flask-render-template-string
+language: python
+severity: error
+message: render_template_string with non-constant input is a server-side template injection (SSTI) → RCE sink (CWE-94).
+rule:
+  any:
+    - pattern: render_template_string($X)
+    - pattern: flask.render_template_string($X)
+
+# ── Command injection (CWE-78) ──────────────────────────────────────────────
+---
+id: py-os-system
+language: python
+severity: error
+message: os.system runs a string through the shell — a command-injection sink with any non-constant input (CWE-78).
+rule:
+  pattern: os.system($X)
+---
+id: py-os-popen
+language: python
+severity: error
+message: os.popen runs a string through the shell — a command-injection sink with any non-constant input (CWE-78).
+rule:
+  pattern: os.popen($X)
+---
+id: py-subprocess-shell-true
+language: python
+severity: error
+message: subprocess with shell=True runs the command through a shell — a command-injection sink when any part is non-constant (CWE-78).
+rule:
+  pattern:
+    context: "f(shell=True)"
+    selector: keyword_argument
+
+# ── Unsafe deserialization (CWE-502) ────────────────────────────────────────
+---
+id: py-pickle-loads
+language: python
+severity: error
+message: pickle/cPickle loads on untrusted data executes arbitrary code during deserialization (CWE-502).
+rule:
+  any:
+    - pattern: pickle.loads($ARG)
+    - pattern: pickle.load($ARG)
+    - pattern: cPickle.loads($ARG)
+---
+id: py-yaml-load-unsafe
+language: python
+severity: error
+message: yaml.load without SafeLoader can instantiate arbitrary objects — use yaml.safe_load (CWE-502).
+rule:
+  pattern: yaml.load($ARG)
+---
+id: py-marshal-loads
+language: python
+severity: warning
+message: marshal.loads on untrusted data can crash the interpreter or execute crafted code objects (CWE-502).
+rule:
+  any:
+    - pattern: marshal.loads($ARG)
+    - pattern: marshal.load($ARG)
+
+# ── SQL injection (CWE-89) ──────────────────────────────────────────────────
+---
+id: py-sql-execute-percent
+language: python
+severity: error
+message: SQL built with %-formatting interpolates values into the query — use parameterized execute(sql, params) (CWE-89).
+rule:
+  any:
+    - pattern: $CUR.execute($Q % $P)
+    - pattern: $CUR.executemany($Q % $P)
+---
+id: py-sql-execute-concat
+language: python
+severity: error
+message: SQL built by string concatenation interpolates values into the query — use parameterized execute(sql, params) (CWE-89).
+rule:
+  any:
+    - pattern: $CUR.execute($A + $B)
+    - pattern: $CUR.executemany($A + $B)
+---
+id: py-sql-execute-format
+language: python
+severity: error
+message: SQL built with str.format() interpolates values into the query — use parameterized execute(sql, params) (CWE-89).
+rule:
+  pattern: $CUR.execute($Q.format($$$ARGS))
+
+# ── XXE (CWE-611) ───────────────────────────────────────────────────────────
+---
+id: py-lxml-resolve-entities
+language: python
+severity: error
+message: lxml XMLParser(resolve_entities=True) enables external entity expansion — an XXE sink. Use defusedxml or resolve_entities=False (CWE-611).
+rule:
+  pattern:
+    context: "f(resolve_entities=True)"
+    selector: keyword_argument
+
+# ── Weak crypto (CWE-327) ───────────────────────────────────────────────────
+---
+id: py-hashlib-md5
+language: python
+severity: warning
+message: MD5 is cryptographically broken — use hashlib.sha256+ for security contexts (CWE-327).
+rule:
+  pattern: hashlib.md5($$$A)
+---
+id: py-hashlib-sha1
+language: python
+severity: warning
+message: SHA-1 is cryptographically broken — use hashlib.sha256+ for security contexts (CWE-327).
+rule:
+  pattern: hashlib.sha1($$$A)
+
+# ── Disabled TLS verification (CWE-295) ─────────────────────────────────────
+---
+id: py-requests-verify-false
+language: python
+severity: warning
+message: verify=False disables TLS certificate validation, enabling MITM (CWE-295).
+rule:
+  pattern:
+    context: "f(verify=False)"
+    selector: keyword_argument
+---
+id: py-ssl-unverified-context
+language: python
+severity: error
+message: ssl._create_unverified_context() disables certificate validation, enabling MITM (CWE-295).
+rule:
+  pattern: ssl._create_unverified_context($$$A)
+
+# ── XSS (CWE-79) ────────────────────────────────────────────────────────────
+---
+id: py-mark-safe
+language: python
+severity: warning
+message: mark_safe() on non-constant data disables auto-escaping — a stored/reflected XSS sink (CWE-79).
+rule:
+  any:
+    - pattern: mark_safe($X)
+    - pattern: django.utils.safestring.mark_safe($X)
+
+# ── Insecure temp file (CWE-377) ────────────────────────────────────────────
+---
+id: py-tempfile-mktemp
+language: python
+severity: warning
+message: tempfile.mktemp is race-condition-prone (TOCTOU) — use tempfile.mkstemp/NamedTemporaryFile (CWE-377).
+rule:
+  pattern: tempfile.mktemp($$$A)
+
+# ── SSRF (CWE-918) ──────────────────────────────────────────────────────────
+---
+id: py-ssrf-url-concat
+language: python
+severity: warning
+message: HTTP request to a URL built by string concatenation may be attacker-controlled (SSRF) — validate the host against an allowlist (CWE-918).
+rule:
+  any:
+    - pattern: requests.get($A + $B)
+    - pattern: requests.post($A + $B)
+    - pattern: requests.put($A + $B)
+    - pattern: requests.delete($A + $B)
+    - pattern: urllib.request.urlopen($A + $B)
+    - pattern: httpx.get($A + $B)
+
+# ── Path traversal (CWE-22) ─────────────────────────────────────────────────
+---
+id: py-path-traversal-concat
+language: python
+severity: warning
+message: File path built by string concatenation may escape the intended directory (path traversal) — confine under a base directory with realpath validation (CWE-22).
+rule:
+  any:
+    - pattern: open($A + $B)
+    - pattern: open($A + $B, $MODE)

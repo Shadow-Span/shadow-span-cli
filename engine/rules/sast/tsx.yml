@@ -1,0 +1,203 @@
+# TSX SAST rules — derived from javascript.yml (same patterns,
+# tsx dialect). ast-grep treats tsx as distinct from javascript, so the
+# JS-family rules are mirrored per dialect.
+
+id: tsx-eval-call
+language: tsx
+severity: error
+message: eval() executes arbitrary code — a code-injection sink with any non-constant input (CWE-95).
+rule: { pattern: eval($ARG) }
+---
+id: tsx-function-constructor
+language: tsx
+severity: warning
+message: The Function constructor compiles a string to code — equivalent to eval (CWE-95).
+rule: { pattern: new Function($$$ARGS) }
+---
+id: tsx-settimeout-string
+language: tsx
+severity: warning
+message: setTimeout/setInterval with a string argument evaluates it as code like eval (CWE-95).
+rule:
+  any:
+    - pattern: setTimeout($CODE, $$$REST)
+    - pattern: setInterval($CODE, $$$REST)
+constraints:
+  CODE: { kind: string }
+
+# ── Command injection (CWE-78) ──────────────────────────────────────────────
+---
+id: tsx-child-process-exec-template
+language: tsx
+severity: error
+message: child_process.exec with an interpolated command string is a command-injection sink — use execFile with an argv array (CWE-78).
+rule:
+  any:
+    - pattern: $OBJ.exec(`$$$PARTS`)
+    - pattern: $OBJ.execSync(`$$$PARTS`)
+---
+id: tsx-child-process-exec-concat
+language: tsx
+severity: error
+message: child_process.exec with a concatenated command string is a command-injection sink — use execFile with an argv array (CWE-78).
+rule:
+  any:
+    - pattern: $OBJ.exec($A + $B)
+    - pattern: $OBJ.execSync($A + $B)
+
+# ── SQL injection (CWE-89) ──────────────────────────────────────────────────
+---
+id: tsx-sql-query-template
+language: tsx
+severity: error
+message: SQL query built with a template literal interpolates values directly into SQL — use parameterized queries (CWE-89).
+rule:
+  any:
+    - pattern: $DB.query(`$$$PARTS`)
+    - pattern: $DB.execute(`$$$PARTS`)
+---
+id: tsx-sql-query-concat
+language: tsx
+severity: error
+message: SQL query built by string concatenation interpolates values into SQL — use parameterized queries (CWE-89).
+rule:
+  any:
+    - pattern: $DB.query($A + $B)
+    - pattern: $DB.execute($A + $B)
+
+# ── NoSQL injection (CWE-943) ───────────────────────────────────────────────
+---
+id: tsx-nosql-where-operator
+language: tsx
+severity: error
+message: MongoDB $where / $function with non-constant input runs server-side JS — a NoSQL injection + code-execution sink (CWE-943).
+rule:
+  any:
+    - pattern: "{ $where: $V }"
+    - pattern: "{ $function: $V }"
+
+# ── Unsafe deserialization (CWE-502) ────────────────────────────────────────
+---
+id: tsx-node-serialize-unserialize
+language: tsx
+severity: error
+message: node-serialize unserialize() on untrusted data executes embedded functions — remote code execution (CWE-502).
+rule: { pattern: $X.unserialize($ARG) }
+
+# ── XSS sinks (CWE-79) ──────────────────────────────────────────────────────
+---
+id: tsx-dom-innerhtml
+language: tsx
+severity: warning
+message: Assigning to innerHTML/outerHTML with non-constant data is a DOM XSS sink — sanitize or use textContent (CWE-79).
+rule:
+  any:
+    - pattern: $EL.innerHTML = $X
+    - pattern: $EL.outerHTML = $X
+---
+id: tsx-document-write
+language: tsx
+severity: warning
+message: document.write with non-constant data is a DOM XSS sink (CWE-79).
+rule: { pattern: document.write($X) }
+---
+id: tsx-insert-adjacent-html
+language: tsx
+severity: warning
+message: insertAdjacentHTML with non-constant data is a DOM XSS sink — sanitize first (CWE-79).
+rule:
+  pattern: $EL.insertAdjacentHTML($POS, $HTML)
+
+# ── Weak crypto (CWE-327) ───────────────────────────────────────────────────
+---
+id: tsx-weak-hash-md5
+language: tsx
+severity: warning
+message: MD5 is cryptographically broken — use SHA-256+ for security contexts (CWE-327).
+rule:
+  any:
+    - pattern: $X.createHash('md5')
+    - pattern: $X.createHash("md5")
+    - pattern: createHash('md5')
+    - pattern: createHash("md5")
+---
+id: tsx-weak-hash-sha1
+language: tsx
+severity: warning
+message: SHA-1 is cryptographically broken — use SHA-256+ for security contexts (CWE-327).
+rule:
+  any:
+    - pattern: $X.createHash('sha1')
+    - pattern: $X.createHash("sha1")
+    - pattern: createHash('sha1')
+    - pattern: createHash("sha1")
+
+# ── Disabled TLS verification (CWE-295) ─────────────────────────────────────
+---
+id: tsx-tls-reject-unauthorized-false
+language: tsx
+severity: error
+message: rejectUnauthorized:false disables TLS certificate validation, enabling MITM (CWE-295).
+rule:
+  pattern:
+    context: "({ rejectUnauthorized: false })"
+    selector: pair
+---
+id: tsx-tls-node-env-disable
+language: tsx
+severity: error
+message: Setting NODE_TLS_REJECT_UNAUTHORIZED=0 disables TLS verification process-wide, enabling MITM (CWE-295).
+rule:
+  any:
+    - pattern: process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
+    - pattern: process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"
+
+# ── Insecure randomness (CWE-338) ───────────────────────────────────────────
+---
+id: tsx-insecure-random
+language: tsx
+severity: info
+message: Math.random() is not cryptographically secure — use crypto.randomBytes/randomUUID for tokens, keys, or IDs (CWE-338).
+rule: { pattern: Math.random() }
+
+# ── SSRF (CWE-918) ──────────────────────────────────────────────────────────
+---
+id: tsx-ssrf-url-concat
+language: tsx
+severity: warning
+message: HTTP request to a URL built by string concatenation may be attacker-controlled (SSRF) — validate the host against an allowlist (CWE-918).
+rule:
+  any:
+    - pattern: axios.get($A + $B)
+    - pattern: axios.post($A + $B)
+    - pattern: axios($A + $B)
+    - pattern: fetch($A + $B)
+    - pattern: http.get($A + $B)
+    - pattern: https.get($A + $B)
+    - pattern: http.request($A + $B)
+    - pattern: https.request($A + $B)
+
+# ── Path traversal (CWE-22) ─────────────────────────────────────────────────
+---
+id: tsx-path-traversal-concat
+language: tsx
+severity: warning
+message: File path built by string concatenation may escape the intended directory (path traversal) — normalize and confine under a base directory (CWE-22).
+rule:
+  any:
+    - pattern: fs.readFile($A + $B)
+    - pattern: fs.readFileSync($A + $B)
+    - pattern: fs.createReadStream($A + $B)
+    - pattern: fs.writeFile($A + $B)
+    - pattern: fs.writeFileSync($A + $B)
+    - pattern: fs.unlink($A + $B)
+    - pattern: fs.unlinkSync($A + $B)
+---
+id: tsx-dangerously-set-inner-html
+language: tsx
+severity: warning
+message: dangerouslySetInnerHTML injects raw HTML — sanitize the value or it is a stored/reflected XSS sink (CWE-79).
+rule:
+  pattern:
+    context: "<a dangerouslySetInnerHTML={$X} />"
+    selector: jsx_attribute

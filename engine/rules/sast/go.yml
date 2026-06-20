@@ -1,0 +1,129 @@
+# Go SAST rules — our own ast-grep rule pack (MIT engine).
+# Coverage guide: OWASP Top 10 / CWE Top 25. error → HIGH, warning → MEDIUM.
+#
+# Go parser nuance: `pkg.Func($X)` with a single metavar arg is ambiguous with
+# a type-conversion and tree-sitter mis-parses it — so single-arg call sinks use
+# the context+selector:call_expression idiom. No-arg (New()) and multi-arg
+# (exec.Command) calls parse unambiguously and use plain patterns. Struct-field
+# sinks (InsecureSkipVerify) use selector:keyed_element. Go has no eval().
+
+# ── Disabled TLS verification (CWE-295) ─────────────────────────────────────
+id: go-tls-insecure-skip-verify
+language: go
+severity: error
+message: InsecureSkipVerify:true disables TLS certificate validation, enabling MITM (CWE-295).
+rule:
+  pattern:
+    context: "_ = tls.Config{InsecureSkipVerify: true}"
+    selector: keyed_element
+
+# ── Command injection (CWE-78) ──────────────────────────────────────────────
+---
+id: go-exec-command-shell
+language: go
+severity: error
+message: exec.Command invoking a shell with "-c" and a built string is a command-injection sink — pass argv directly instead (CWE-78).
+rule:
+  any:
+    - pattern: exec.Command($SH, "-c", $CMD)
+    - pattern: exec.CommandContext($CTX, $SH, "-c", $CMD)
+
+# ── SQL injection (CWE-89) ──────────────────────────────────────────────────
+---
+id: go-sql-query-sprintf
+language: go
+severity: error
+message: SQL built with fmt.Sprintf interpolates values into the query — use parameterized queries with placeholders (CWE-89).
+rule:
+  any:
+    - pattern:
+        context: "func f() { $DB.Query(fmt.Sprintf($$$A)) }"
+        selector: call_expression
+    - pattern:
+        context: "func f() { $DB.QueryRow(fmt.Sprintf($$$A)) }"
+        selector: call_expression
+    - pattern:
+        context: "func f() { $DB.QueryContext($CTX, fmt.Sprintf($$$A)) }"
+        selector: call_expression
+    - pattern:
+        context: "func f() { $DB.Exec(fmt.Sprintf($$$A)) }"
+        selector: call_expression
+
+# ── Weak crypto (CWE-327) ───────────────────────────────────────────────────
+---
+id: go-weak-hash-md5
+language: go
+severity: warning
+message: MD5 is cryptographically broken — use crypto/sha256+ for security contexts (CWE-327).
+rule:
+  any:
+    - pattern: md5.New()
+    - pattern:
+        context: "func f() { md5.Sum($X) }"
+        selector: call_expression
+---
+id: go-weak-hash-sha1
+language: go
+severity: warning
+message: SHA-1 is cryptographically broken — use crypto/sha256+ for security contexts (CWE-327).
+rule:
+  any:
+    - pattern: sha1.New()
+    - pattern:
+        context: "func f() { sha1.Sum($X) }"
+        selector: call_expression
+---
+id: go-weak-cipher-des
+language: go
+severity: warning
+message: DES/3DES is obsolete and weak — use crypto/aes (AES-GCM) (CWE-327).
+rule:
+  any:
+    - pattern:
+        context: "func f() { des.NewCipher($K) }"
+        selector: call_expression
+    - pattern:
+        context: "func f() { des.NewTripleDESCipher($K) }"
+        selector: call_expression
+---
+id: go-weak-cipher-rc4
+language: go
+severity: warning
+message: RC4 is a broken stream cipher — use crypto/aes (AES-GCM) (CWE-327).
+rule:
+  pattern:
+    context: "func f() { rc4.NewCipher($K) }"
+    selector: call_expression
+
+# ── SSRF (CWE-918) ──────────────────────────────────────────────────────────
+---
+id: go-ssrf-url-concat
+language: go
+severity: warning
+message: HTTP request to a URL built by string concatenation may be attacker-controlled (SSRF) — validate the host against an allowlist (CWE-918).
+rule:
+  any:
+    - pattern:
+        context: "func f() { http.Get($A + $B) }"
+        selector: call_expression
+    - pattern:
+        context: "func f() { http.Post($A + $B, $CT, $BODY) }"
+        selector: call_expression
+
+# ── Path traversal (CWE-22) ─────────────────────────────────────────────────
+---
+id: go-path-traversal-concat
+language: go
+severity: warning
+message: File path built by string concatenation may escape the intended directory (path traversal) — use filepath.Clean and confine under a base directory (CWE-22).
+rule:
+  any:
+    - pattern:
+        context: "func f() { os.Open($A + $B) }"
+        selector: call_expression
+    - pattern:
+        context: "func f() { os.ReadFile($A + $B) }"
+        selector: call_expression
+    - pattern:
+        context: "func f() { ioutil.ReadFile($A + $B) }"
+        selector: call_expression
