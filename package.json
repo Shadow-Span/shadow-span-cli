@@ -24,7 +24,7 @@
     "type": "git",
     "url": "git+https://github.com/Shadow-Span/shadow-span-cli.git"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "Shadow Span",
   "engines": {
     "node": ">=20"
@@ -39,7 +39,9 @@
     "bin",
     "src",
     "engine",
-    "THIRD_PARTY_NOTICES.md"
+    "THIRD_PARTY_NOTICES.md",
+    "LICENSE",
+    "NOTICE"
   ],
   "scripts": {
     "test": "vitest run src/__tests__"
