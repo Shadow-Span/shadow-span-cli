@@ -1,0 +1,19 @@
+Shadow Span CLI
+Copyright 2026 Shadow Span Technologies Inc.
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product invokes the following open-source scanner binaries as external
+subprocesses. When the Shadow Span CLI is distributed as a Docker image that
+bundles these binaries, their licenses and copyright notices apply and are
+reproduced in THIRD_PARTY_NOTICES.md:
+
+  - gitleaks      — MIT License        — https://github.com/gitleaks/gitleaks
+  - ast-grep      — MIT License        — https://github.com/ast-grep/ast-grep
+  - osv-scanner   — Apache License 2.0 — https://github.com/google/osv-scanner
+  - Trivy         — Apache License 2.0 — https://github.com/aquasecurity/trivy
+  - Nuclei        — MIT License        — https://github.com/projectdiscovery/nuclei
+
+These tools are unmodified. Their output is transformed into Shadow Span's own
+finding format. When a binary is already present on the user's PATH (not
+distributed by us), no redistribution obligation applies to that binary.
