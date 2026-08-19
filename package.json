@@ -1,6 +1,9 @@
 {
-  "name": "shadow-span-cli",
+  "name": "@shadow-span/cli",
   "version": "0.1.0",
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "description": "Run Shadow Span's application-security checks (SAST / SCA / secrets / IaC) in your own pipeline — pre-commit and CI. Engines run locally, your source never leaves your infrastructure, and findings are normalized to Shadow Span's format and optionally reported to the platform.",
   "keywords": [

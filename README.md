@@ -8,8 +8,8 @@ by severity, and can optionally be reported to the platform.
 ## Install
 
 ```sh
-npm install -g shadow-span-cli
-# or run ad-hoc:  npx shadow-span-cli scan
+npm install -g @shadow-span/cli
+# or run ad-hoc:  npx @shadow-span/cli scan
 ```
 
 Requires the engine binaries on your `PATH`: `gitleaks`, `ast-grep`,
