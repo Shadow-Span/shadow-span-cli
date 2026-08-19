@@ -104,7 +104,7 @@ rule:
 ---
 id: csharp-insecure-random
 language: csharp
-severity: warning
+severity: info
 message: System.Random is predictable — use RandomNumberGenerator for tokens, keys, nonces, or IDs (CWE-338).
 rule: { pattern: new Random($$$A) }
 
@@ -130,3 +130,200 @@ rule:
     - pattern: File.ReadAllText($A + $B)
     - pattern: File.ReadAllBytes($A + $B)
     - pattern: File.OpenRead($A + $B)
+
+---
+# ── Weak cipher / mode (CWE-327) ─────────────────────────────────────────────
+id: cs-weak-cipher-des-ecb
+language: csharp
+severity: warning
+message: RC2 is a weak cipher and ECB block-cipher mode leaks plaintext structure — use AES (Aes.Create) with an authenticated (GCM) or CBC mode (CWE-327).
+rule:
+  any:
+    - pattern: RC2.Create()
+    - pattern: CipherMode.ECB
+
+# ── Unsafe deserializers (CWE-502) ───────────────────────────────────────────
+---
+id: cs-jsserializer-typeresolver
+language: csharp
+severity: error
+message: JavaScriptSerializer with a SimpleTypeResolver resolves arbitrary types from input, enabling deserialization gadget attacks — remove the resolver (CWE-502).
+rule:
+  pattern: new JavaScriptSerializer(new SimpleTypeResolver())
+---
+id: cs-json-typenamehandling
+language: csharp
+severity: error
+message: Json.NET TypeNameHandling other than None resolves CLR types embedded in JSON, enabling deserialization RCE — set TypeNameHandling.None or use a strict SerializationBinder (CWE-502).
+rule:
+  any:
+    - pattern: TypeNameHandling.All
+    - pattern: TypeNameHandling.Auto
+    - pattern: TypeNameHandling.Objects
+
+# ── XXE (CWE-611) ────────────────────────────────────────────────────────────
+---
+id: cs-xxe-dtdprocessing-allow
+language: csharp
+severity: error
+message: DtdProcessing.Allow enables DTD and external-entity processing — an XXE sink. Use DtdProcessing.Prohibit and a null XmlResolver (CWE-611).
+rule:
+  pattern: DtdProcessing.Allow
+
+# ── Reflected XSS via raw HTML (CWE-79) ──────────────────────────────────────
+---
+id: cs-html-raw-xss
+language: csharp
+severity: warning
+message: Html.Raw on a non-literal value emits unencoded markup and is a reflected/stored XSS sink — HTML-encode the value or avoid Raw (CWE-79).
+rule:
+  any:
+    - pattern: Html.Raw($X)
+    - pattern: "@Html.Raw($X)"
+constraints:
+  X:
+    not:
+      any:
+        - regex: '^"[^"]*"$'
+        - regex: '^@"[^"]*"$'
+        - regex: "^'[^']*'$"
+
+# ── Open redirect (CWE-601) ──────────────────────────────────────────────────
+---
+id: cs-open-redirect
+language: csharp
+severity: warning
+message: Redirecting to a non-literal URL lets an attacker control the destination (open redirect) — validate against an allowlist of local paths/hosts (CWE-601).
+rule:
+  any:
+    - pattern: Response.Redirect($X)
+    - pattern: Redirect($X)
+constraints:
+  X:
+    not:
+      any:
+        - regex: '^"[^"]*"$'
+        - regex: '^@"[^"]*"$'
+        - regex: "^'[^']*'$"
+
+# ── LDAP injection (CWE-90) ──────────────────────────────────────────────────
+---
+id: cs-ldap-injection
+language: csharp
+severity: warning
+message: DirectorySearcher built from a non-literal filter is an LDAP injection sink — escape the filter with proper LDAP encoding (CWE-90).
+rule:
+  pattern: new DirectorySearcher($X)
+constraints:
+  X:
+    not:
+      any:
+        - regex: '^"[^"]*"$'
+        - regex: '^@"[^"]*"$'
+        - regex: "^'[^']*'$"
+
+# ── XPath injection (CWE-643) ────────────────────────────────────────────────
+---
+id: cs-xpath-injection
+language: csharp
+severity: warning
+message: SelectNodes/SelectSingleNode with a non-literal XPath expression is an XPath injection sink — parameterize or validate the expression (CWE-643).
+rule:
+  any:
+    - pattern: $N.SelectNodes($X)
+    - pattern: $N.SelectSingleNode($X)
+constraints:
+  X:
+    not:
+      any:
+        - regex: '^"[^"]*"$'
+        - regex: '^@"[^"]*"$'
+        - regex: "^'[^']*'$"
+
+# ── Weak TLS/SSL protocols (CWE-326) ─────────────────────────────────────────
+---
+id: cs-weak-ssl-protocols
+language: csharp
+severity: warning
+message: SSLv3 / TLS 1.0 / TLS 1.1 are deprecated and weak — require TLS 1.2 or 1.3 (CWE-326).
+rule:
+  any:
+    - pattern: SslProtocols.Ssl3
+    - pattern: SslProtocols.Tls
+    - pattern: SslProtocols.Tls11
+    - pattern: SecurityProtocolType.Ssl3
+
+# ── Insecure cookie flags (CWE-614) ──────────────────────────────────────────
+---
+id: cs-cookie-insecure
+language: csharp
+severity: warning
+message: Cookies set with Secure=false or HttpOnly=false expose session data over plaintext or to script — enable both flags for auth/session cookies (CWE-614).
+rule:
+  any:
+    - pattern: Secure = false
+    - pattern: HttpOnly = false
+
+# ── Permissive CORS (CWE-942) ────────────────────────────────────────────────
+---
+id: cs-cors-wildcard
+language: csharp
+severity: warning
+message: A wildcard CORS origin (AllowAnyOrigin / WithOrigins("*")) lets any site read authenticated responses — restrict to an explicit origin allowlist (CWE-942).
+rule:
+  any:
+    - pattern: $X.AllowAnyOrigin()
+    - pattern: $X.WithOrigins("*")
+
+# ── ReDoS: Regex without timeout (CWE-1333) ──────────────────────────────────
+---
+id: cs-regex-no-timeout
+language: csharp
+severity: info
+message: Regex constructed without a matchTimeout can be driven to catastrophic backtracking (ReDoS) on attacker-supplied input — pass a TimeSpan timeout (CWE-1333).
+rule:
+  pattern: new Regex($P)
+
+# ── XSLT script execution (CWE-94) ───────────────────────────────────────────
+---
+id: cs-xslt-enable-script
+language: csharp
+severity: error
+message: XsltSettings with EnableScript=true allows embedded script in an XSLT stylesheet to execute (code injection) — disable script and document() resolution (CWE-94).
+rule:
+  any:
+    - pattern: new XsltSettings(true, true)
+    - pattern: EnableScript = true
+
+# ── Weak RSA key size (CWE-326) ──────────────────────────────────────────────
+---
+id: cs-weak-rsa-keysize
+language: csharp
+severity: warning
+message: RSA key sizes below 2048 bits are inadequate — use at least 2048-bit keys (CWE-326).
+rule:
+  any:
+    - pattern: new RSACryptoServiceProvider(1024)
+    - pattern: new RSACryptoServiceProvider(512)
+
+# ── Disabled anti-forgery (CWE-352) ──────────────────────────────────────────
+---
+id: cs-antiforgery-ignore
+language: csharp
+severity: warning
+message: "[IgnoreAntiforgeryToken] disables CSRF protection on a state-changing action — remove it or scope it to safe, idempotent endpoints (CWE-352)."
+rule:
+  pattern:
+    context: "class C { [IgnoreAntiforgeryToken] void M() {} }"
+    selector: attribute
+
+# ── Disabled request validation (CWE-20) ─────────────────────────────────────
+---
+id: cs-validateinput-false
+language: csharp
+severity: warning
+message: "[ValidateInput(false)] turns off ASP.NET request validation, removing a defense-in-depth XSS guard — keep validation on and encode output (CWE-20)."
+rule:
+  pattern:
+    context: "class C { [ValidateInput(false)] void M() {} }"
+    selector: attribute

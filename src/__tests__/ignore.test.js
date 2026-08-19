@@ -17,9 +17,9 @@ describe('parseIgnore', () => {
 
   it('** matches across path segments', () => {
     const m = parseIgnore('**/__fixtures__/**');
-    expect(m.test('engine/rules/__fixtures__/vuln.go')).toBe(true);
+    expect(m.test('services/appsec/rules/__fixtures__/vuln.go')).toBe(true);
     expect(m.test('packages/x/__fixtures__/a/b/c.js')).toBe(true);
-    expect(m.test('src/scan.js')).toBe(false);
+    expect(m.test('services/appsec/runner.js')).toBe(false);
   });
 
   it('* matches within a segment only', () => {

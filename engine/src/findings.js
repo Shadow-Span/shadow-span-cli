@@ -20,7 +20,7 @@ function chunk(arr, size = CHUNK) {
  * target (targetId). Exactly one scope is passed; the other stays null on the
  * row, and the matching scope-specific @@unique constraint dedups.
  *
- * @param {object} prisma  the platform database client
+ * @param {object} prisma  @shadow-span/db client
  * @param {object} args
  * @param {string} args.orgId
  * @param {string} [args.repositoryId]  repo scope (SAST/SCA/IAC/SECRET)
@@ -76,6 +76,7 @@ export async function upsertAppSecFindings(prisma, { orgId, repositoryId, target
         fixedVersion: f.fixedVersion,
         cwe: f.cwe,
         reachability: f.reachability ?? null,
+        dependencyDepth: f.dependencyDepth ?? null,
         identityKey: f.identityKey,
         evidence: f.evidence ?? undefined,
         firstSeenAt: now,
@@ -133,7 +134,20 @@ export async function upsertAppSecFindings(prisma, { orgId, repositoryId, target
             cwe: f.cwe,
             column: f.column,
             reachability: f.reachability ?? null,
+            // Depth is manifest-derived and CHANGES when a dependency is promoted from transitive to
+            // declared (or dropped to indirect). Freezing it at create time would keep reporting an
+            // "unused direct dependency" that is no longer direct.
+            dependencyDepth: f.dependencyDepth ?? null,
             evidence: f.evidence ?? undefined,
+            // packageVersion (installed) + fixedVersion are scanner-owned AND mutable AND NOT pinned by
+            // identityKey (SCA/SBOM/CONTAINER identity = type:ruleId:ecosystem:package, version-free — see
+            // buildIdentityKey). They CAN legitimately drift on a re-observe: a dependency bump changes the
+            // installed version; an advisory update or a fix to the extractor changes the fixed version.
+            // Omitting them froze the row at CREATE-time values — e.g. a corrected fixedVersion (7.29.6)
+            // showed in `remediation` text but the `fixedVersion` COLUMN kept the stale 8.0.0-rc.6, and the
+            // AVR resolver (planSafeUpgrade reads BOTH columns) still mis-routed to a backport. Refresh them.
+            packageVersion: f.packageVersion,
+            fixedVersion: f.fixedVersion,
           },
         })
       )
@@ -142,10 +156,15 @@ export async function upsertAppSecFindings(prisma, { orgId, repositoryId, target
   }
   // A re-observed finding that was previously auto-closed must re-open —
   // but never resurrect FALSE_POSITIVE / ACCEPTED_RISK.
+  //
+  // CLOSED is included alongside REMEDIATED: closeFindingsForInactiveRepos uses CLOSED when a
+  // repository stops being tracked, and re-observing it means the repository is BACK (token
+  // restored, repo re-added). Without this the deactivation would be a one-way door — the finding
+  // would sit CLOSED forever while the scanner kept seeing it every run.
   for (const keys of chunk(reobservedKeys)) {
     await prisma.appSecFinding.updateMany({
-      where: { orgId, ...scopeWhere, identityKey: { in: keys }, status: 'REMEDIATED' },
-      data: { status: 'OPEN' },
+      where: { orgId, ...scopeWhere, identityKey: { in: keys }, status: { in: ['REMEDIATED', 'CLOSED'] } },
+      data: { status: 'OPEN', fixedAt: null },
     });
   }
   let closed = 0;
@@ -171,7 +190,7 @@ export async function upsertAppSecFindings(prisma, { orgId, repositoryId, target
  * stale packages (a re-scan no longer lists them) are DELETED (the SBOM is a
  * point-in-time inventory, not a workflow surface — no analyst state to keep).
  *
- * @param {object} prisma  the platform database client
+ * @param {object} prisma  @shadow-span/db client
  * @param {object} args
  * @param {string} args.orgId
  * @param {string} args.repositoryId
@@ -251,4 +270,58 @@ export async function upsertRepoPackages(prisma, { orgId, repositoryId, packages
   }
 
   return { created: toCreate.length, reobserved, removed, total: incoming.length };
+}
+
+/**
+ * Close the findings of repositories that are no longer tracked.
+ *
+ * THE RULE: if the SOURCE is not active, its findings are not active. A repository the SCM token can
+ * no longer see is gone — deleted, transferred, or access revoked — and an OPEN finding on it is not
+ * something anyone can act on. Leaving them open inflates the open count, skews any time-to-remediate
+ * metric, and grows without bound as repositories churn.
+ *
+ * FOUND 2026-08-08. Discovery already marked such repositories `isActive=false` ("kept for history"),
+ * and nothing downstream honoured it: /api/appsec/findings filters on orgId alone, with no isActive
+ * predicate in the route or in lib/appsec/repo-filter.js. The repositories LIST route DID filter, so
+ * the repo itself vanished from the UI while its findings stayed visible and counted — which is
+ * exactly why nobody noticed. Measured on prod: 31 of 2,267 OPEN findings (1.4%) belonged to
+ * shadow-span-deletion_scheduled-83523634, deactivated three weeks earlier.
+ *
+ * WHY `CLOSED` AND NOT `REMEDIATED`. The scanner's own stale-sweep uses REMEDIATED, which asserts the
+ * problem was FIXED. Nothing was fixed here — we simply stopped being able to see it. CLOSED is the
+ * neutral scanner-owned terminal state and was previously unused; this gives it its meaning.
+ *
+ * REVERSIBLE BY CONSTRUCTION. Analyst decisions are never touched (FALSE_POSITIVE / ACCEPTED_RISK
+ * stay put), and upsertAppSecFindings now re-opens a re-observed CLOSED finding exactly as it does a
+ * REMEDIATED one — so restoring a token or re-adding a repository brings its findings back on the
+ * next scan rather than burying them for good.
+ *
+ * A RECONCILIATION SWEEP, not a hook on the deactivation event. Both discovery paths (GitHub App and
+ * the shared GitLab/Bitbucket core) return only a COUNT of deactivated repos, and wiring IDs through
+ * both would mean two places to remember. Sweeping instead is idempotent, costs one indexed query,
+ * and — the reason it matters — heals repositories that were deactivated BEFORE this existed. The 31
+ * prod findings above were three weeks stale; an event hook would never have touched them.
+ *
+ * @param {object} prisma
+ * @param {{orgId: string}} args
+ * @returns {Promise<{closed:number, repos:number}>}
+ */
+export async function closeFindingsForInactiveRepos(prisma, { orgId }) {
+  if (!orgId) return { closed: 0, repos: 0 };
+  const inactive = await prisma.sourceRepository.findMany({
+    where: { organizationId: orgId, isActive: false },
+    select: { id: true },
+  });
+  if (inactive.length === 0) return { closed: 0, repos: 0 };
+  let closed = 0;
+  for (const ids of chunk(inactive.map((r) => r.id))) {
+    const r = await prisma.appSecFinding.updateMany({
+      // Analyst decisions are untouched: FALSE_POSITIVE and ACCEPTED_RISK are deliberate verdicts
+      // about the finding itself and survive the repository going away.
+      where: { orgId, repositoryId: { in: ids }, status: { in: ['OPEN', 'IN_PROGRESS'] } },
+      data: { status: 'CLOSED', fixedAt: new Date() },
+    });
+    closed += r.count;
+  }
+  return { closed, repos: inactive.length };
 }

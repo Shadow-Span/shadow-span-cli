@@ -1,11 +1,13 @@
-// SAST engine — ast-grep, a tree-sitter structural matcher. We ship our own
-// rule packs (under engine/rules/sast/), authored against the OWASP Top 10 and
-// CWE Top 25 for coverage.
+// SAST engine — ast-grep (MIT). NOT Semgrep / OpenGrep (LGPL-2.1) or CodeQL
+// (proprietary). ast-grep is a tree-sitter structural matcher; we ship OUR OWN
+// rule packs (services/appsec/rules/sast/*.yml), authored using Semgrep /
+// OWASP Top 10 / CWE Top 25 as a COVERAGE GUIDE — never copying rule files.
 //
 // v1 scope = Tier-0 structural + simple single-file sinks: eval/exec code
 // injection, weak crypto, disabled TLS verification, unsafe deserialization,
 // React XSS sinks. Deep inter-procedural taint (data flow across functions) is
-// a deliberate v2 decision and is out of scope here.
+// a deliberate v2 decision (our own engine or an optional Joern deep mode) and
+// is OUT of scope here — see plans/PLAN-appsec-module.md.
 //
 // Invocation: `ast-grep scan --config <rules>/sgconfig.yml --json=compact <repo>`
 // → JSON array of matches on stdout. ast-grep exits non-zero when error-severity
@@ -25,8 +27,9 @@ const execFileAsync = promisify(execFile);
 
 const SAST_TIMEOUT_MS = parseInt(process.env.APPSEC_SAST_TIMEOUT_MS || `${10 * 60 * 1000}`, 10);
 
-// Rule pack ships under engine/rules/sgconfig.yml, resolved relative to this
-// engine module (up two directories, then into rules/).
+// Rule pack ships beside the service: …/services/appsec/rules/sgconfig.yml
+// (engines live at …/services/appsec/src/engines/ → up two dirs to the service
+// root, then into rules/).
 const RULES_CONFIG = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..', '..', 'rules', 'sgconfig.yml',

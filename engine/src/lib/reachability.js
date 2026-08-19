@@ -1,22 +1,19 @@
-// SCA reachability — rank each vulnerable dependency by how likely it is to
-// actually matter, the noise-reduction Aikido/Cycode/Snyk lead with. Two tiers:
+// DEPENDENCY DEPTH — is a vulnerable dependency one the project explicitly declares, or something
+// pulled in five levels down? Read from the SIBLING manifest beside the lockfile osv-scanner
+// reports. Ecosystems: npm, Go, PyPI. Result: `finding.dependencyDepth` ∈ DIRECT|TRANSITIVE|UNKNOWN.
 //
-//   1. DIRECT vs TRANSITIVE (reachability-LITE) — is the dep one the project
-//      explicitly declares, or pulled in five levels down? Read the SIBLING
-//      manifest beside the lockfile osv-scanner reports. Ecosystems: npm, Go, PyPI.
-//   2. IMPORTED (reachability-V1) — is the vulnerable package actually IMPORTED in
-//      source? A single bounded walk of the source tree greps import statements;
-//      a package whose import-symbol appears is REACHABLE (highest priority). Only
-//      ecosystems where the package name maps cleanly to the import symbol are
-//      covered: npm (name = specifier root), Go (module path = import path),
-//      RubyGems (separator-normalized). Python/Java/etc. have no clean name→import
-//      mapping, so they STAY at DIRECT/TRANSITIVE — honest, never a false REACHABLE.
+// THIS FILE NO LONGER DECIDES REACHABILITY. It used to do both, and promoting the two answers into
+// ONE column is what made the product unreadable: a row reading "Transitive" could not be
+// distinguished from a row where reachability had simply not been computed, and a row reading
+// "Reachable" silently outranked "Direct" — two different questions competing for one label.
 //
-// Resulting `evidence.reachability = { dependency, imported, tier }` and the
-// promoted top-level `finding.reachability = tier` (REACHABLE|DIRECT|TRANSITIVE|
-// UNKNOWN) which the UI filters + sorts on. True call-graph reachability (proving
-// the vulnerable FUNCTION is invoked) is osv-scanner --call-analysis, left
-// env-gated-off because it runs build scripts on untrusted customer source.
+// Reachability now lives in services/appsec/src/sca-reachability.js, which runs as a whole-tree
+// pass in the runner (like the SAST pass) because the questions it must answer — which module root
+// owns this file, is this test code, does this file import the exact path the advisory names — are
+// tree-level and cannot be answered from inside a per-engine hook. See that file's header for the
+// three defects the old import-grep produced on real data.
+//
+// Depth is genuinely manifest-local, so it stays here, beside the parsers that read the manifests.
 
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
@@ -35,6 +32,17 @@ export function parseNpmDirect(text) {
     for (const name of Object.keys(json?.[key] || {})) out.add(name);
   }
   return out;
+}
+
+/** The `workspaces` globs a root package.json declares, normalized to an array. npm also accepts
+ *  the object form `{ packages: [...] }` (the Yarn-compatible spelling).
+ *  Ref: https://docs.npmjs.com/cli/v10/using-npm/workspaces */
+export function parseNpmWorkspaceGlobs(text) {
+  let json;
+  try { json = JSON.parse(text); } catch { return []; }
+  const w = json?.workspaces;
+  const globs = Array.isArray(w) ? w : Array.isArray(w?.packages) ? w.packages : [];
+  return globs.filter((g) => typeof g === 'string' && g && !g.startsWith('!'));
 }
 
 /** go.mod → Set of DIRECT module paths (require lines without `// indirect`). */
@@ -94,128 +102,18 @@ function matchName(ecosystem, pkgName, directSet) {
   return directSet.has(pkgName);
 }
 
-// ── Import-symbol reachability (V1) ──────────────────────────────────────────
-
-// Bounds so a pathological repo can't hang or OOM the walk. On exceed we return
-// whatever was collected — import detection degrades to "not detected" (tier
-// falls back to DIRECT/TRANSITIVE), never a wrong REACHABLE.
-const WALK_MAX_FILES = parseInt(process.env.APPSEC_REACH_MAX_FILES || '12000', 10);
-const WALK_MAX_FILE_BYTES = 512 * 1024;
-const WALK_DEADLINE_MS = parseInt(process.env.APPSEC_REACH_DEADLINE_MS || '20000', 10);
-const EXCLUDE_DIRS = new Set([
-  'node_modules', 'vendor', '.git', 'dist', 'build', 'out', '.next', '.nuxt',
-  'target', '__pycache__', '.venv', 'venv', '.tox', '.gradle', 'bin', 'obj',
-  'coverage', '.terraform', 'testdata', 'fixtures', '.cache',
-]);
-
-// Source extension → ecosystem whose imports it carries.
-const EXT_ECOSYSTEM = {
-  '.js': 'npm', '.jsx': 'npm', '.ts': 'npm', '.tsx': 'npm', '.mjs': 'npm', '.cjs': 'npm',
-  '.go': 'Go',
-  '.rb': 'RubyGems',
-};
-
-function normSep(s) { return String(s || '').toLowerCase().replace(/[-_]/g, ''); }
-
-// JS/TS: import/require/dynamic-import specifiers → the package ROOT (handles
-// scoped @org/pkg and subpath pkg/sub). Skips relative + node: builtins.
-function extractJsImports(text, set) {
-  const re = /(?:from|import|require)\s*\(?\s*['"]([^'"]+)['"]/g;
-  let m;
-  while ((m = re.exec(text))) {
-    const spec = m[1];
-    if (!spec || spec.startsWith('.') || spec.startsWith('/') || spec.startsWith('node:')) continue;
-    const parts = spec.split('/');
-    const root = spec.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
-    if (root) set.add(root);
-  }
-}
-
-// Go: quoted import paths (single + block form). Full path; matched by prefix
-// against the module path later (a finding's module may be imported via a subpkg).
-function extractGoImports(text, set) {
-  const re = /\bimport\s+(?:\(\s*([\s\S]*?)\)|((?:_\s+|\.\s+)?"[^"]+"))/g;
-  let m;
-  while ((m = re.exec(text))) {
-    const body = m[1] || m[2] || '';
-    const q = body.match(/"([^"]+)"/g) || [];
-    for (const s of q) { const p = s.slice(1, -1); if (p) set.add(p); }
-  }
-}
-
-// Ruby: require 'gem' (skip require_relative). Root before first '/'; matched
-// separator-normalized (gem rest-client → require 'rest_client').
-function extractRubyImports(text, set) {
-  const re = /\brequire\s+['"]([^'"]+)['"]/g;
-  let m;
-  while ((m = re.exec(text))) {
-    const spec = m[1];
-    if (!spec || spec.startsWith('.')) continue;
-    set.add(normSep(spec.split('/')[0]));
-  }
-}
-
-const EXTRACTORS = { npm: extractJsImports, Go: extractGoImports, RubyGems: extractRubyImports };
-
 /**
- * ONE bounded walk of the source tree, collecting imported symbols per ecosystem.
- * @returns {Promise<{npm:Set,Go:Set,RubyGems:Set}>}
- */
-export async function collectImports(repoPath) {
-  const sets = { npm: new Set(), Go: new Set(), RubyGems: new Set() };
-  const deadline = Date.now() + WALK_DEADLINE_MS;
-  let filesRead = 0;
-  const stack = ['.'];
-  while (stack.length) {
-    if (Date.now() > deadline || filesRead >= WALK_MAX_FILES) break;
-    const rel = stack.pop();
-    let entries;
-    try { entries = await readdir(path.join(repoPath, rel), { withFileTypes: true }); }
-    catch { continue; }
-    for (const e of entries) {
-      if (e.isSymbolicLink()) continue; // don't follow symlinks out of the tree
-      if (e.isDirectory()) {
-        if (!EXCLUDE_DIRS.has(e.name) && !e.name.startsWith('.')) stack.push(path.join(rel, e.name));
-        continue;
-      }
-      const eco = EXT_ECOSYSTEM[path.extname(e.name).toLowerCase()];
-      if (!eco) continue;
-      if (filesRead >= WALK_MAX_FILES || Date.now() > deadline) break;
-      try {
-        const text = await readFile(path.join(repoPath, rel, e.name), 'utf8');
-        filesRead++;
-        EXTRACTORS[eco](text.length > WALK_MAX_FILE_BYTES ? text.slice(0, WALK_MAX_FILE_BYTES) : text, sets[eco]);
-      } catch { /* unreadable/binary — skip */ }
-    }
-  }
-  return sets;
-}
-
-// Is the vulnerable package's import-symbol present? Returns:
-//   true  — imported (REACHABLE)
-//   false — checked + not found (a clean-mapping ecosystem with import data)
-//   null  — undetermined (ecosystem unsupported, or no source of that type found)
-// null never produces a false REACHABLE *or* a false "not imported".
-function isImported(ecosystem, pkgName, importSets) {
-  if (!pkgName) return null;
-  if (ecosystem === 'npm') return importSets.npm.size ? importSets.npm.has(pkgName) : null;
-  if (ecosystem === 'RubyGems') return importSets.RubyGems.size ? importSets.RubyGems.has(normSep(pkgName)) : null;
-  if (ecosystem === 'Go') {
-    if (!importSets.Go.size) return null;
-    if (importSets.Go.has(pkgName)) return true;
-    for (const p of importSets.Go) if (p.startsWith(pkgName + '/')) return true;
-    return false;
-  }
-  return null; // PyPI / Maven / NuGet / Composer — no clean name→import mapping in v1
-}
-
-/**
- * Enrich SCA findings in place with evidence.reachability:
- *   { dependency: 'DIRECT'|'TRANSITIVE'|'UNKNOWN' }
+ * Enrich SCA findings in place with `dependencyDepth` ∈ DIRECT|TRANSITIVE|UNKNOWN.
+ *
+ * UNKNOWN is load-bearing and means "no manifest we could parse sat beside this lockfile" — it
+ * must not be read as TRANSITIVE. The distinction decides a real verdict downstream: a DIRECT
+ * dependency nothing imports is an unused dependency, whereas the same absence on a TRANSITIVE one
+ * says nothing at all (see sca-reachability.js#classify).
+ *
  * @param {Array} findings  normalized findings (only type=SCA are touched)
  * @param {string} repoPath repo checkout root
  */
-export async function enrichReachability(findings, repoPath) {
+export async function enrichDependencyDepth(findings, repoPath) {
   // Cache parsed direct-dep sets per (dir, ecosystem) so we read each manifest once.
   const cache = new Map();
 
@@ -234,6 +132,18 @@ export async function enrichReachability(findings, repoPath) {
             : ecosystem === 'Go' ? parseGoModDirect(text)
             : parsePyDirect(text, fname);
           if (parsed.size) { set = set || new Set(); for (const n of parsed) set.add(n); }
+          // NPM WORKSPACES: one lockfile at the root, but the dependencies are declared in the
+          // MEMBER manifests. Reading only the root package.json made every workspace dependency
+          // look transitive — on this monorepo the root declares exactly one dependency, so all 93
+          // npm findings were reported TRANSITIVE including @anthropic-ai/sdk, which
+          // packages/ai/package.json declares outright. Depth then silently mislabels every
+          // monorepo, and the "unused direct dependency" verdict downstream can never fire.
+          if (ecosystem === 'npm') {
+            for (const wsText of await readWorkspaceManifests(repoPath, dir, parseNpmWorkspaceGlobs(text))) {
+              const wsDeps = parseNpmDirect(wsText);
+              if (wsDeps.size) { set = set || new Set(); for (const n of wsDeps) set.add(n); }
+            }
+          }
         } catch { /* manifest not present here */ }
       }
     }
@@ -241,28 +151,49 @@ export async function enrichReachability(findings, repoPath) {
     return set;
   }
 
-  // ONE source-tree walk for import symbols — only when there's an SCA finding in
-  // a clean-mapping ecosystem (npm/Go/RubyGems). Skip the walk entirely otherwise.
-  const scaEcos = new Set(findings.filter((f) => f.type === 'SCA').map((f) => f.packageEcosystem));
-  const needWalk = ['npm', 'Go', 'RubyGems'].some((e) => scaEcos.has(e));
-  let importSets = { npm: new Set(), Go: new Set(), RubyGems: new Set() };
-  if (needWalk) {
-    try { importSets = await collectImports(repoPath); }
-    catch { /* leave empty → imported stays null, tier falls back to dependency */ }
-  }
-
   for (const f of findings) {
     if (f.type !== 'SCA') continue;
     const ecosystem = f.packageEcosystem;
     const lockfile = f.evidence?.lockfile || f.file || null;
     const directSet = await directSetFor(ecosystem, lockfile);
-    let dependency = 'UNKNOWN';
-    if (directSet) dependency = matchName(ecosystem, f.packageName, directSet) ? 'DIRECT' : 'TRANSITIVE';
-    const imported = needWalk ? isImported(ecosystem, f.packageName, importSets) : null;
-    // REACHABLE only on a positive import hit; otherwise the DIRECT/TRANSITIVE tier.
-    const tier = imported === true ? 'REACHABLE' : dependency;
-    f.evidence = { ...(f.evidence || {}), reachability: { dependency, imported, tier } };
-    f.reachability = tier; // promoted to a top-level column for filter + sort
+    let depth = 'UNKNOWN';
+    if (directSet) depth = matchName(ecosystem, f.packageName, directSet) ? 'DIRECT' : 'TRANSITIVE';
+    f.dependencyDepth = depth; // top-level column — filter + sort, and an input to reachability
   }
   return findings;
+}
+
+/** Bound on workspace-manifest reads, so a pathological `workspaces` glob cannot stall a scan. */
+const MAX_WORKSPACE_MANIFESTS = 400;
+
+/**
+ * Read the package.json of every workspace member matched by `globs`.
+ *
+ * Deliberately handles only the two forms npm workspaces actually use in the wild — a literal
+ * directory (`packages/db`) and a single trailing star (`packages/*`) — because anything richer
+ * would need a glob engine, and a wrong expansion here silently changes a dependency's DEPTH
+ * rather than failing. Unmatched patterns simply contribute nothing.
+ */
+async function readWorkspaceManifests(repoPath, dir, globs) {
+  const texts = [];
+  for (const glob of globs) {
+    if (texts.length >= MAX_WORKSPACE_MANIFESTS) break;
+    const star = glob.indexOf('*');
+    let members = [];
+    if (star === -1) {
+      members = [glob];
+    } else if (glob.endsWith('/*') || glob.endsWith('/**')) {
+      const parent = glob.replace(/\/\*+$/, '');
+      try {
+        const entries = await readdir(path.join(repoPath, dir, parent), { withFileTypes: true });
+        members = entries.filter((e) => e.isDirectory()).map((e) => path.posix.join(parent, e.name));
+      } catch { members = []; }
+    }
+    for (const m of members) {
+      if (texts.length >= MAX_WORKSPACE_MANIFESTS) break;
+      try { texts.push(await readFile(path.join(repoPath, dir, m, 'package.json'), 'utf8')); }
+      catch { /* not a workspace member after all */ }
+    }
+  }
+  return texts;
 }

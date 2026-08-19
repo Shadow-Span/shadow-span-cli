@@ -158,3 +158,164 @@ rule:
   pattern:
     context: "void f(){ std::rand(); }"
     selector: call_expression
+
+---
+id: cpp-scanf-unbounded
+language: cpp
+severity: warning
+message: scanf()/fscanf()/sscanf() with %s and no field width can overflow the destination buffer. Use a width specifier (%63s) or std::getline (CWE-120).
+rule:
+  any:
+    - pattern:
+        context: "void f(){ scanf($$$A); }"
+        selector: call_expression
+    - pattern:
+        context: "void f(){ fscanf($$$A); }"
+        selector: call_expression
+    - pattern:
+        context: "void f(){ sscanf($$$A); }"
+        selector: call_expression
+---
+id: cpp-insecure-temp
+language: cpp
+severity: warning
+message: tmpnam()/tempnam()/mktemp() create predictable temp filenames open to a TOCTOU race or symlink attack. Use mkstemp() (CWE-377).
+rule:
+  any:
+    - pattern:
+        context: "void f(){ tmpnam($$$A); }"
+        selector: call_expression
+    - pattern:
+        context: "void f(){ tempnam($$$A); }"
+        selector: call_expression
+    - pattern:
+        context: "void f(){ mktemp($$$A); }"
+        selector: call_expression
+---
+id: cpp-alloca
+language: cpp
+severity: warning
+message: alloca() allocates on the stack with no failure check — an attacker-influenced size can blow the stack. Use std::vector or a bounded heap allocation (CWE-770).
+rule:
+  pattern:
+    context: "void f(){ alloca($$$A); }"
+    selector: call_expression
+---
+id: cpp-atoi-no-error
+language: cpp
+severity: info
+message: atoi()/atol()/atoll() cannot report conversion errors or overflow — out-of-range input yields undefined results. Use std::stoi with exception handling or std::from_chars (CWE-190).
+rule:
+  any:
+    - pattern:
+        context: "void f(){ atoi($$$A); }"
+        selector: call_expression
+    - pattern:
+        context: "void f(){ atol($$$A); }"
+        selector: call_expression
+    - pattern:
+        context: "void f(){ atoll($$$A); }"
+        selector: call_expression
+---
+id: cpp-malloc-mul-overflow
+language: cpp
+severity: warning
+message: malloc()/realloc() with a multiplied size can integer-overflow, allocating less memory than intended and leading to a heap overflow. Use calloc() or check the product (CWE-190).
+rule:
+  any:
+    - pattern:
+        context: "void f(){ malloc($A * $B); }"
+        selector: call_expression
+    - pattern:
+        context: "void f(){ realloc($P, $A * $B); }"
+        selector: call_expression
+---
+id: cpp-chmod-world-permission
+language: cpp
+severity: warning
+message: chmod() with a world-writable/readable mode (0777/0666) exposes the file to any local user. Restrict to the owner (CWE-732).
+rule:
+  any:
+    - pattern:
+        context: "void f(){ chmod($X, 0777); }"
+        selector: call_expression
+    - pattern:
+        context: "void f(){ chmod($X, 0666); }"
+        selector: call_expression
+---
+id: cpp-srand-predictable-seed
+language: cpp
+severity: warning
+message: Seeding srand() with time()/getpid() makes the PRNG sequence predictable — never use it for security tokens, keys, or nonces. Use std::random_device / a CSPRNG (CWE-338).
+rule:
+  any:
+    - pattern:
+        context: "void f(){ srand(time($$$A)); }"
+        selector: call_expression
+    - pattern:
+        context: "void f(){ srand(getpid()); }"
+        selector: call_expression
+---
+id: cpp-strtok-not-reentrant
+language: cpp
+severity: info
+message: strtok() is not thread-safe and mutates its input buffer in place — concurrent use corrupts state. Use strtok_r() or a std::string_view tokenizer (CWE-330).
+rule:
+  pattern:
+    context: "void f(){ strtok($$$A); }"
+    selector: call_expression
+---
+id: cpp-exec-path-search
+language: cpp
+severity: warning
+message: execlp()/execvp() search PATH for the binary — an attacker who controls PATH or the working directory can substitute a malicious executable. Use an absolute path with execl()/execv() (CWE-78).
+rule:
+  any:
+    - pattern:
+        context: "void f(){ execlp($$$A); }"
+        selector: call_expression
+    - pattern:
+        context: "void f(){ execvp($$$A); }"
+        selector: call_expression
+---
+id: cpp-realpath-fixed-buffer
+language: cpp
+severity: warning
+message: realpath() with a caller-supplied buffer overflows if the resolved path exceeds PATH_MAX. Pass nullptr/NULL so realpath() allocates (CWE-120).
+rule:
+  pattern:
+    context: "void f(){ realpath($P, $BUF); }"
+    selector: call_expression
+constraints:
+  BUF: { not: { regex: "^(NULL|nullptr)$" } }
+---
+id: cpp-setuid-unchecked
+language: cpp
+severity: info
+message: The return value of setuid()/setgid() must be checked — if it fails the process keeps elevated privileges, defeating the privilege drop (CWE-252).
+rule:
+  any:
+    - pattern:
+        context: "void f(){ setuid($$$A); }"
+        selector: call_expression
+    - pattern:
+        context: "void f(){ setgid($$$A); }"
+        selector: call_expression
+---
+id: cpp-insecure-temp-std
+language: cpp
+severity: info
+message: std::tmpnam() returns a predictable name with a TOCTOU window before the file is opened. Use mkstemp()/std::filesystem with O_EXCL (CWE-377).
+rule:
+  pattern:
+    context: "void f(){ std::tmpnam($$$A); }"
+    selector: call_expression
+---
+id: cpp-strtok-std
+language: cpp
+severity: info
+message: std::strtok() is not thread-safe and mutates its input buffer in place — concurrent use corrupts state. Use a std::string_view tokenizer (CWE-330).
+rule:
+  pattern:
+    context: "void f(){ std::strtok($$$A); }"
+    selector: call_expression

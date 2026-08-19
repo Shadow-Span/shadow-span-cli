@@ -71,7 +71,19 @@ export function parseIgnore(text) {
     }
     return ignored;
   };
-  return { test, patterns: rules.map((r) => r.raw), count: rules.length };
+  // WHICH rule decided to suppress a path — not just whether one did. "142 findings suppressed"
+  // is not actionable; "142 suppressed by `**`" is. Last match wins, same as `test`, so a later
+  // negation correctly reports "not suppressed" (null) rather than the earlier rule that matched.
+  const which = (rel) => {
+    const norm = String(rel || '').replace(/\\/g, '/').replace(/^\.\//, '');
+    let decided = null;
+    for (const r of rules) {
+      if (r.re.test(norm)) decided = r.negate ? null : r.raw;
+    }
+    return decided;
+  };
+
+  return { test, which, patterns: rules.map((r) => r.raw), count: rules.length };
 }
 
 /**
@@ -94,9 +106,24 @@ export async function loadIgnore(repoPath) {
 export function applyIgnore(findings, matcher) {
   const kept = [];
   let ignored = 0;
+  // Per-rule tally, reported to the platform so a repo-local ignore file stops being a silent
+  // channel. The org list stays authoritative for what the PLATFORM drops; this records what the
+  // RUNNER dropped on top of it, and which rule did it.
+  const byRule = new Map();
   for (const f of findings || []) {
-    if (f.file && matcher.test(f.file)) ignored++;
-    else kept.push(f);
+    if (f.file && matcher.test(f.file)) {
+      ignored++;
+      const rule = (matcher.which ? matcher.which(f.file) : null) || '(unknown rule)';
+      byRule.set(rule, (byRule.get(rule) || 0) + 1);
+    } else {
+      kept.push(f);
+    }
   }
-  return { kept, ignored };
+  return {
+    kept,
+    ignored,
+    byRule: [...byRule.entries()]
+      .map(([rule, count]) => ({ rule, count }))
+      .sort((a, b) => b.count - a.count),
+  };
 }

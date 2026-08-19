@@ -87,7 +87,7 @@ rule:
 ---
 id: java-insecure-random
 language: java
-severity: warning
+severity: info
 message: java.util.Random is predictable — use java.security.SecureRandom for tokens, keys, nonces, or IDs (CWE-330).
 rule: { pattern: new Random($$$A) }
 
@@ -113,3 +113,139 @@ rule:
     - pattern: new File($A + $B)
     - pattern: new FileInputStream($A + $B)
     - pattern: new FileReader($A + $B)
+
+---
+id: java-scriptengine-eval
+language: java
+severity: warning
+message: ScriptEngine.eval executes script source — passing untrusted input enables code injection (CWE-94).
+rule:
+  pattern: { context: '$E.eval($X)', selector: method_invocation }
+constraints:
+  X: { not: { kind: string_literal } }
+  E: { regex: "(?i)(engine|script|js|nashorn)" }
+---
+id: java-weak-cipher-mode
+language: java
+severity: warning
+message: Weak or ECB-mode cipher transformation — DES/3DES/RC4/Blowfish and ECB mode are broken; use AES/GCM (CWE-327).
+rule:
+  pattern: Cipher.getInstance($ALG)
+constraints:
+  ALG: { regex: "(?i)(\\bdes\\b|desede|3des|ecb|rc4|arcfour|blowfish)" }
+---
+id: java-xxe-saxparser
+language: java
+severity: warning
+message: SAXParserFactory created without disabling DOCTYPE/external entities is vulnerable to XXE — set disallow-doctype-decl and disable external-general-entities (CWE-611).
+rule: { pattern: SAXParserFactory.newInstance() }
+---
+id: java-xxe-xmlinputfactory
+language: java
+severity: warning
+message: XMLInputFactory created without IS_SUPPORTING_EXTERNAL_ENTITIES=false / SUPPORT_DTD=false is vulnerable to XXE (CWE-611).
+rule:
+  any:
+    - pattern: XMLInputFactory.newInstance()
+    - pattern: XMLInputFactory.newFactory()
+---
+id: java-xxe-transformerfactory
+language: java
+severity: warning
+message: TransformerFactory created without ACCESS_EXTERNAL_DTD/ACCESS_EXTERNAL_STYLESHEET locked down is vulnerable to XXE/SSRF — set both to the empty string (CWE-611).
+rule: { pattern: TransformerFactory.newInstance() }
+---
+id: java-hostname-verifier-allow-all
+language: java
+severity: error
+message: Installing a HostnameVerifier that always returns true disables TLS hostname checks, enabling MITM (CWE-295).
+rule:
+  pattern: { context: 'HttpsURLConnection.setDefaultHostnameVerifier($V)', selector: method_invocation }
+---
+id: java-spring-csrf-disable
+language: java
+severity: warning
+message: Spring Security CSRF protection disabled — state-changing endpoints become forgeable (CWE-352).
+rule:
+  any:
+    - pattern: $H.csrf().disable()
+    - pattern: $H.csrf($C -> $C.disable())
+---
+id: java-spring-cors-wildcard
+language: java
+severity: warning
+message: CORS configured with a wildcard origin lets any site read authenticated responses — pin explicit origins (CWE-942).
+rule:
+  any:
+    - pattern: '@CrossOrigin(origins = "*")'
+    - pattern: $C.allowedOrigins("*")
+    - pattern: $C.allowedOriginPatterns("*")
+---
+id: java-open-redirect-sendredirect
+language: java
+severity: warning
+message: HttpServletResponse.sendRedirect with a non-literal target may redirect to an attacker-controlled URL (open redirect) — validate against an allowlist (CWE-601).
+rule:
+  pattern: $R.sendRedirect($X)
+constraints:
+  X: { not: { kind: string_literal } }
+---
+id: java-setaccessible-true
+language: java
+severity: info
+message: setAccessible(true) bypasses Java access controls and can break encapsulation/security managers — confirm the reflective access is required (CWE-470).
+rule: { pattern: $F.setAccessible(true) }
+---
+id: java-classforname-dynamic
+language: java
+severity: warning
+message: Class.forName with a non-literal class name allows unsafe reflection / unexpected class loading from untrusted input (CWE-470).
+rule:
+  pattern: Class.forName($X)
+constraints:
+  X: { not: { kind: string_literal } }
+---
+id: java-cookie-insecure-flag
+language: java
+severity: warning
+message: Cookie created with setSecure(false)/setHttpOnly(false) is sent over plaintext or readable from JavaScript — set both to true for session cookies (CWE-614).
+rule:
+  any:
+    - pattern: $C.setSecure(false)
+    - pattern: $C.setHttpOnly(false)
+---
+id: java-securerandom-seeded
+language: java
+severity: warning
+message: Seeding SecureRandom with a constant (constructor seed or setSeed) makes its output predictable — let it self-seed (CWE-330).
+rule:
+  any:
+    - pattern: new SecureRandom($SEED)
+    - pattern: $R.setSeed($SEED)
+constraints:
+  SEED: { not: { kind: identifier } }
+---
+id: java-zip-slip
+language: java
+severity: warning
+message: Building a destination File from an archive entry name (entry.getName()) without validation allows Zip Slip path traversal — verify the resolved path stays under the target directory (CWE-22).
+rule:
+  pattern: new File($DIR, $ENTRY.getName())
+---
+id: java-ldap-search-dynamic
+language: java
+severity: warning
+message: DirContext.search with a non-literal filter built from input is vulnerable to LDAP injection — use encoded search controls / parameterized filters (CWE-90).
+rule:
+  pattern: $CTX.search($BASE, $FILTER, $$$REST)
+constraints:
+  FILTER: { not: { kind: string_literal } }
+---
+id: java-log4j-jndi-literal
+language: java
+severity: error
+message: String literal containing a JNDI lookup template (${jndi:...}) is a Log4Shell-class expression-injection payload/sink (CWE-917).
+rule:
+  pattern: $X
+  kind: string_literal
+  regex: '\$\{jndi:'

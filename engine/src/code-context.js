@@ -58,7 +58,7 @@ export async function attachCodeContext(findings, repoRoot, { contextLines = DEF
       const raw = lines[n - 1] ?? '';
       // Redact any credential sitting in the surrounding lines BEFORE it becomes
       // part of the finding — a secret adjacent to a SAST/IaC hit must never ride
-      // into the snippet we store/transmit (the secret-rotation rule).
+      // into the snippet we store/transmit (the rotation rule, plan §6a/§9).
       const text = redactSecrets(raw);
       window.push({
         n,

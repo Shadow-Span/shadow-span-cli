@@ -1,15 +1,21 @@
-// Shadow Span AppSec engine — barrel of the scanning kernel.
+// @shadow-span/appsec-engine — barrel of the canonical AppSec kernel.
 //
-// Engines shell out to binaries on PATH (gitleaks / ast-grep / osv-scanner /
-// trivy / nuclei) and normalize their output into a single finding format. A
-// database client is injected into upsertAppSecFindings when persistence is
-// needed — the kernel itself has zero runtime dependencies.
+// Consumers:
+//   - services/appsec (server scanner: runner.js, dast-runner.js)
+//   - tools/shadow-span-cli (customer shift-left CLI — vendors this kernel)
+//   - apps/web ingest API (normalize/upsert/gate reuse)
+//
+// One implementation, no duplicates (matcher-kernel discipline). Engines shell
+// out to binaries on PATH (gitleaks/ast-grep/osv-scanner/trivy/nuclei); the
+// Prisma client is injected into upsertAppSecFindings — the package has zero
+// runtime dependencies.
 
 // Engines
 export { scanSca, collectDependencyLicenses } from './engines/osv-scanner.js';
 export { scanSecrets } from './engines/gitleaks.js';
 export { scanSast } from './engines/sast.js';
 export { scanIac } from './engines/iac.js';
+export { scanBicep, isBicepAvailable } from './engines/bicep.js';
 export { scanCicd, scanWorkflowText } from './engines/cicd.js';
 export { scanContainer } from './engines/container.js';
 export { scanDast } from './engines/nuclei.js';
@@ -20,7 +26,7 @@ export { generateSbom } from './engines/sbom.js';
 export { evaluateLicensePolicy, classifyLicense, DEFAULT_LICENSE_POLICY } from './license-policy.js';
 
 // Scanner ignore rules (settings page): path exclusions
-export { applyPathExclusions, compileExclusions, isPathExcluded } from './lib/path-exclude.js';
+export { applyPathExclusions, compileExclusions, isPathExcluded, explainExclusions } from './lib/path-exclude.js';
 
 // Normalization + finding identity
 export {
@@ -47,15 +53,22 @@ export {
   parseNpmDirect,
   parseGoModDirect,
   parsePyDirect,
-  enrichReachability,
+  enrichDependencyDepth,
 } from './lib/reachability.js';
 export { isDockerfileName, findDockerfiles } from './lib/dockerfiles.js';
 
 // Persistence (Prisma client injected)
-export { upsertAppSecFindings, upsertRepoPackages } from './findings.js';
+export { upsertAppSecFindings, upsertRepoPackages, closeFindingsForInactiveRepos } from './findings.js';
 
 // CI/pre-commit gate
 export { evaluateGate, SEVERITY_ORDER, FAIL_ON_LEVELS } from './gate.js';
 
 // Secret redaction (snippet + evidence scrubbing)
 export { redactSecrets, redactDeep } from './redact.js';
+
+// Suppression rules (read-time FP triage — org/repo scoped, MALWARE-exempt)
+export {
+  SUPPRESSION_SCOPES, SUPPRESSION_MATCH_TYPES,
+  isRuleActive, findingMatchesRule, isSuppressed, buildSuppressionWhere,
+  pathMatchesGlob, globToRegExp,
+} from './suppression.js';

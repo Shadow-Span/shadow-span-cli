@@ -11,6 +11,12 @@
 // commit sha and non-sensitive metadata survive normalization — storing the
 // leaked value would turn our own DB into a secret store.
 
+// Generated IaC fix corpus — Aqua trivy-checks' canonical remediated example per
+// check (290 across AWS/Azure/GCP/+). Static data, no I/O. Hand-verified
+// overrides below (K8s/Docker/Bicep) take precedence. Regenerate via
+// scripts/gen-iac-fixes.mjs.
+import { IAC_FIX_GENERATED } from './iac-fixes.generated.js';
+
 export const FINDING_TYPES = Object.freeze({
   SAST: 'SAST', // ast-grep (MIT) + our own rule packs — Phase 2, LIVE
   SCA: 'SCA', // osv-scanner — Phase 1, LIVE
@@ -27,7 +33,19 @@ export const FINDING_TYPES = Object.freeze({
   //              scoped (Dockerfile FROM line churns) — dedicated identityKey branch.
   LICENSE: 'LICENSE', // SBOM dependency-license policy violations (see license-policy.js).
   //              No file — purl-scoped identityKey LICENSE:<ruleId>:<purl>.
+  MALWARE: 'MALWARE', // Known-malicious dependency — OSV malicious-packages (MAL-*),
+  //              compromised/typosquat/install-script malware. Always CRITICAL,
+  //              never auto-suppressed. Package-scoped identityKey
+  //              MALWARE:<osvId>:<ecosystem>:<pkg>.
 });
+
+/** OSV malicious-packages advisories use the MAL- namespace. A vuln is malware if
+ *  its id OR any alias starts with MAL-. */
+export function isMalwareAdvisory(vuln) {
+  if (!vuln) return false;
+  const ids = [vuln.id, ...(Array.isArray(vuln.aliases) ? vuln.aliases : [])];
+  return ids.some((x) => typeof x === 'string' && x.toUpperCase().startsWith('MAL-'));
+}
 
 const SEVERITY_WORDS = {
   CRITICAL: 'CRITICAL',
@@ -58,6 +76,11 @@ export function cvssScoreToSeverity(score) {
  * documented on the schema model; keep both in sync.
  */
 export function buildIdentityKey(f) {
+  if (f.type === FINDING_TYPES.MALWARE) {
+    // Package-scoped — the offending package is the identity, independent of which
+    // lockfile surfaced it. Mirrors the SCA shape.
+    return `MALWARE:${f.ruleId}:${f.packageEcosystem || ''}:${f.packageName || ''}`;
+  }
   if (f.type === FINDING_TYPES.SCA || f.type === FINDING_TYPES.SBOM_VULN) {
     // Lockfile line numbers churn on every dependency bump — exclude them so
     // an unrelated `npm install` doesn't re-open every SCA finding as "new".
@@ -116,8 +139,12 @@ export function normalizeOsvResults(json, { repoRoot = '' } = {}) {
       for (const vuln of pkg?.vulnerabilities || []) {
         if (!vuln?.id) continue;
         const group = groups.find((g) => (g?.ids || []).includes(vuln.id));
-        const severity =
-          cvssScoreToSeverity(group?.max_severity) !== 'UNKNOWN'
+        const malware = isMalwareAdvisory(vuln);
+        // Malware is a different KIND of problem than a vulnerable version — the
+        // package itself is hostile, so it's always CRITICAL regardless of CVSS.
+        const severity = malware
+          ? 'CRITICAL'
+          : cvssScoreToSeverity(group?.max_severity) !== 'UNKNOWN'
             ? cvssScoreToSeverity(group?.max_severity)
             : normalizeSeverityWord(vuln?.database_specific?.severity);
 
@@ -125,20 +152,24 @@ export function normalizeOsvResults(json, { repoRoot = '' } = {}) {
           (vuln.id.startsWith('CVE-') && vuln.id) ||
           (vuln.aliases || []).find((a) => typeof a === 'string' && a.startsWith('CVE-')) ||
           null;
-        const fixedVersion = extractFixedVersion(vuln, { name, ecosystem });
+        const fixedVersion = extractFixedVersion(vuln, { name, ecosystem, version });
 
         const finding = {
-          type: FINDING_TYPES.SCA,
-          ruleId: vuln.id, // OSV id (GHSA-…, GO-…, or CVE-…)
+          type: malware ? FINDING_TYPES.MALWARE : FINDING_TYPES.SCA,
+          ruleId: vuln.id, // OSV id (MAL-…, GHSA-…, GO-…, or CVE-…)
           ruleName: clip(vuln.summary || vuln.id, 300),
           severity,
           file: sourcePath || null,
           line: null,
           column: null,
           description: clip(vuln.summary || vuln.details || vuln.id),
-          remediation: fixedVersion
-            ? `Upgrade ${name} to ${fixedVersion} or later (${ecosystem || 'unknown ecosystem'}).`
-            : null,
+          // Malware isn't "upgrade to a fixed version" — there is no safe version;
+          // the package must be removed/replaced.
+          remediation: malware
+            ? `Remove ${name} (${ecosystem || 'unknown ecosystem'}) immediately — this package is flagged malicious by OSV (${vuln.id}). Do not upgrade; replace it and rotate any secrets it could have accessed.`
+            : fixedVersion
+              ? `Upgrade ${name} to ${fixedVersion} or later (${ecosystem || 'unknown ecosystem'}).`
+              : null,
           cveId,
           packageName: name,
           packageEcosystem: ecosystem || null,
@@ -151,6 +182,12 @@ export function normalizeOsvResults(json, { repoRoot = '' } = {}) {
             aliases: vuln.aliases || [],
             lockfile: sourcePath || null,
             modified: vuln.modified || null,
+            // WHERE in the package the vulnerability lives, when the advisory says so. This is the
+            // only authoritative vulnerable-symbol source we get for free — GoVulnDB populates it
+            // and osv-scanner passes it through verbatim (verified: 34 of the advisories on one Go
+            // module carried it). Without it, "is this dependency reachable?" can only ever be
+            // answered at package granularity. Schema: https://ossf.github.io/osv-schema/#go
+            ...vulnerableLocations(vuln, { name, ecosystem }),
           },
         };
         finding.identityKey = buildIdentityKey(finding);
@@ -161,19 +198,92 @@ export function normalizeOsvResults(json, { repoRoot = '' } = {}) {
   return findings;
 }
 
-/** First published fixed version for the matching (ecosystem, package). */
-function extractFixedVersion(vuln, { name, ecosystem }) {
+/**
+ * The fixed version for the matching (ecosystem, package), CHOSEN FOR THE INSTALLED VERSION's branch.
+ *
+ * Multi-branch advisories list a fix per major line — e.g. @babel/core GHSA-4x5r-pxfx-6jf8 is fixed in
+ * BOTH 7.29.6 (v7) and 8.0.0-rc.6 (v8). Returning the first `event.fixed` across all ranges pointed a
+ * 7.29.0 install at the 8.0.0 MAJOR bump (breaking + a pre-release) instead of its own 7.29.6 patch —
+ * which then mis-routed AVR to a backport. So: collect every fixed version, then prefer the one on the
+ * SAME major as the installed version (the nearest in-major upgrade); else the lowest fix on a major
+ * ≥ the installed major (nearest forward branch); else the first fix.
+ */
+/**
+ * The advisory's own statement of WHERE the vulnerability lives: import paths + symbols.
+ *
+ * Scoped to the `affected` entry for THIS package — a multi-package advisory lists paths for every
+ * affected module, and mixing them in would claim a path belongs to a package it does not.
+ * GO-2026-5004 is the live example: it lists internal/sanitize under pgx v4 AND v5.
+ *
+ * Returns `{}` when the advisory says nothing, so the evidence blob stays clean and a consumer can
+ * tell "the advisory did not localize this" from "it localized it to nothing".
+ */
+function vulnerableLocations(vuln, { name, ecosystem }) {
+  const paths = new Set();
+  const symbols = new Set();
+  for (const affected of vuln?.affected || []) {
+    const pkg = affected?.package || {};
+    if (pkg.name && pkg.name !== name) continue;
+    if (pkg.ecosystem && ecosystem && pkg.ecosystem !== ecosystem) continue;
+    for (const imp of affected?.ecosystem_specific?.imports || []) {
+      if (imp?.path) paths.add(imp.path);
+      for (const s of imp?.symbols || []) if (s) symbols.add(s);
+    }
+  }
+  if (!paths.size && !symbols.size) return {};
+  return {
+    ...(paths.size ? { vulnerablePaths: [...paths].sort() } : {}),
+    ...(symbols.size ? { vulnerableSymbols: [...symbols].sort() } : {}),
+  };
+}
+
+/**
+ * OSV range types whose `fixed` events name a VERSION. Per the OSV schema, `affected[].ranges[].type`
+ * is one of GIT | SEMVER | ECOSYSTEM, and in a GIT range the events are **commit hashes**, not
+ * versions: https://ossf.github.io/osv-schema/#affectedranges-field
+ *
+ * THE BUG THIS CLOSES (observed on prod 2026-08-08). This loop had no type filter, so commit hashes
+ * were collected as candidate fixed versions. `PYSEC-2023-74` (requests, CVE-2023-32681) carries BOTH
+ * a GIT range fixed at `74ea7cf7a6a27a4eeb2ae24e162bcc942a6706d5` and the real ECOSYSTEM fix at
+ * `2.31.0`; seven prod AppSecFinding rows ended up with that hash as their `fixedVersion`, and one
+ * reached AvrRemediation as an `officialFixedVersion` — which is the field that decides
+ * upgrade-vs-backport, so `majorOf('74ea7cf7…')` = 74 read as "crosses a major" and manufactured a
+ * backport request for a CVE whose honest fix is `pip install requests==2.31.0`.
+ *
+ * The same-major preference below masks this MOST of the time, which is why it survived: for an
+ * installed 2.26.0 the real 2.31.0 wins on major 2. It does not always mask it — a hash beginning
+ * with the installed major's digit (`2ab34c…` against a 2.x package) matches `sameMajor` FIRST and is
+ * returned as the fix. Filtering by range type removes the class instead of relying on that luck.
+ */
+const VERSION_RANGE_TYPES = new Set(['SEMVER', 'ECOSYSTEM']);
+/** A bare 7+ hex-digit token is a commit id, never a version — belt to the type filter's braces. */
+const looksLikeCommitSha = (v) => /^[0-9a-f]{7,40}$/i.test(String(v || '')) && /[a-f]/i.test(String(v || ''));
+
+function extractFixedVersion(vuln, { name, ecosystem, version }) {
+  const fixes = [];
   for (const affected of vuln?.affected || []) {
     const pkg = affected?.package || {};
     if (pkg.name !== name) continue;
     if (ecosystem && pkg.ecosystem && pkg.ecosystem !== ecosystem) continue;
     for (const range of affected?.ranges || []) {
+      // An absent type is not assumed to be a version range — OSV marks `type` required, so a record
+      // without one is malformed and we would rather skip it than guess.
+      if (!VERSION_RANGE_TYPES.has(String(range?.type || '').toUpperCase())) continue;
       for (const event of range?.events || []) {
-        if (event?.fixed) return event.fixed;
+        if (event?.fixed && !looksLikeCommitSha(event.fixed)) fixes.push(event.fixed);
       }
     }
   }
-  return null;
+  if (!fixes.length) return null;
+  const majorOf = (v) => parseInt(String(v || '').replace(/^[^\d]*/, '').split('.')[0], 10);
+  const vMaj = version != null ? majorOf(version) : NaN;
+  if (!Number.isNaN(vMaj)) {
+    const sameMajor = fixes.find((f) => majorOf(f) === vMaj);
+    if (sameMajor) return sameMajor;
+    const forward = fixes.filter((f) => majorOf(f) >= vMaj).sort((a, b) => majorOf(a) - majorOf(b))[0];
+    if (forward) return forward;
+  }
+  return fixes[0];
 }
 
 /**
@@ -264,6 +374,34 @@ const SAST_REMEDIATION_BY_CWE = {
   'CWE-377': 'Create temp files atomically (mkstemp / NamedTemporaryFile); never use mktemp, which is race-condition-prone.',
   'CWE-502': 'Never deserialize untrusted data with a native serializer. Use a data-only format (JSON) with schema validation, or restrict to an allowlist of known types.',
   'CWE-611': 'Disable DTD processing and external-entity resolution on the XML parser (disallow-doctype-decl / DtdProcessing.Prohibit / defusedxml).',
+  'CWE-20': 'Keep platform request/input validation enabled and validate every input against an allowlist; encode output at the sink.',
+  'CWE-22': 'Resolve the path under a fixed base directory and reject any result that escapes it (realpath / path.resolve + prefix check). For archives, validate each entry path before extracting.',
+  'CWE-183': 'Replace wildcard host/origin allowlists with an explicit list of permitted hostnames.',
+  'CWE-190': 'Validate and clamp numeric input, and use overflow-checked arithmetic/allocators (calloc, checked multiply) before sizing buffers.',
+  'CWE-200': 'Do not expose debug/profiling/management endpoints publicly — bind them to localhost or require auth, and disable them in production.',
+  'CWE-252': 'Check the return value of privilege-dropping and other security-relevant calls, and fail closed when they error.',
+  'CWE-276': 'Create files and directories with least-privilege modes (e.g. 0600 / 0750); never world-writable 0777 / 0666.',
+  'CWE-326': 'Require TLS 1.2+ and RSA keys of at least 2048 bits (prefer ECDSA / Ed25519); disable SSLv3 / TLS 1.0 / TLS 1.1.',
+  'CWE-345': 'Pin an explicit target origin on postMessage and verify event.origin in every message handler.',
+  'CWE-347': 'Always verify the token signature with a pinned algorithm allowlist; never accept the "none" algorithm or disable verification.',
+  'CWE-352': 'Keep CSRF / anti-forgery protection enabled for state-changing requests; use SameSite cookies and per-session tokens.',
+  'CWE-470': 'Do not load classes or modules from untrusted input; map user input to a fixed allowlist of permitted types.',
+  'CWE-489': 'Disable debug mode in production (DEBUG / debug = False) and gate it behind an environment flag.',
+  'CWE-601': 'Redirect only to validated local paths or an allowlist of hosts; never redirect to a raw user-supplied URL.',
+  'CWE-614': 'Set Secure, HttpOnly, and SameSite on session and authentication cookies.',
+  'CWE-643': 'Use parameterized XPath (variable bindings) or strictly validate input; never concatenate input into an expression.',
+  'CWE-668': 'Bind services to a specific interface (127.0.0.1 for local-only) and firewall any public exposure intentionally.',
+  'CWE-732': 'Grant least-privilege file permissions; never chmod 0777 / 0666 on files holding sensitive data.',
+  'CWE-770': 'Avoid unbounded stack allocation (alloca / VLAs); use a bounded heap allocation with an explicit size cap.',
+  'CWE-787': 'Bound every write to the destination buffer size — use length-checked APIs (snprintf, memcpy_s) and validate indices.',
+  'CWE-798': 'Load secrets from the environment or a secret manager; never commit credentials or keys to source.',
+  'CWE-917': 'Upgrade Log4j to >=2.17, disable message lookups, and never log untrusted data through an interpolating layout.',
+  'CWE-918': 'Validate the destination host against an allowlist before making the request, and block internal / metadata IP ranges.',
+  'CWE-942': 'Pin explicit allowed origins; never combine a wildcard origin with credentialed requests.',
+  'CWE-943': 'Reject query operators from user input; use typed, parameterized queries.',
+  'CWE-1022': 'Add rel="noopener noreferrer" to every target="_blank" link.',
+  'CWE-1188': 'Disable nodeIntegration and enable contextIsolation in Electron renderers; expose a minimal API through a preload script.',
+  'CWE-1333': 'Avoid catastrophic-backtracking patterns and set a regex match timeout, or use a linear-time engine (RE2).',
 };
 
 // Canonical "fixed code" examples for the judgment-required injection classes
@@ -289,7 +427,182 @@ const SAST_FIX_EXAMPLE_BY_CWE = {
   'CWE-943': '// Reject query operators from user input; use typed, parameterized filters',
   'CWE-330': '// Use a CSPRNG: java.security.SecureRandom / RandomNumberGenerator',
   'CWE-338': '// Cryptographically secure RNG:\ncrypto.randomUUID()   // or crypto.randomBytes(32)',
+  'CWE-20': "// Keep request validation on; validate against an allowlist:\nif (!ALLOWED.test(input)) throw new Error('invalid input')",
+  'CWE-183': "// Pin explicit hosts, not a wildcard:\nALLOWED_HOSTS = ['app.example.com']",
+  'CWE-190': '// Overflow-safe allocation:\nchar *p = calloc(n, size);   // not malloc(n * size)',
+  'CWE-200': '// Do not register debug/profiling endpoints on a public mux; bind internal-only + require auth',
+  'CWE-252': '// Check the result and fail closed:\nif (setuid(uid) != 0) { abort(); }',
+  'CWE-276': '// Least-privilege mode:\nos.MkdirAll(dir, 0o750)   // not 0o777',
+  'CWE-326': '// Require TLS 1.2+ / RSA >= 2048:\n&tls.Config{MinVersion: tls.VersionTLS12}',
+  'CWE-345': "// Pin the target origin (and verify event.origin on receipt):\nwin.postMessage(msg, 'https://app.example.com')   // not '*'",
+  'CWE-347': "// Verify with a pinned algorithm; never alg 'none':\njwt.verify(token, key, { algorithms: ['RS256'] })",
+  'CWE-352': '// Keep CSRF protection on; require a per-session anti-forgery token on state-changing requests',
+  'CWE-377': '// Atomic temp file:\nint fd = mkstemp(template);   // never tmpnam/tempnam/mktemp',
+  'CWE-470': '// Map input to an allowlisted handler — never Class.forName(userInput) / require(userInput)',
+  'CWE-489': "// Drive debug from the environment, never hardcoded:\nDEBUG = os.environ.get('DEBUG') == '1'",
+  'CWE-601': "// Allowlist redirect targets:\nif (!ALLOWED_PATHS.has(target)) target = '/'",
+  'CWE-614': "// Harden the cookie:\nres.cookie('sid', v, { secure: true, httpOnly: true, sameSite: 'lax' })",
+  'CWE-643': '// Bind variables instead of concatenating into the XPath expression',
+  'CWE-668': "// Bind to a specific interface:\napp.run(host='127.0.0.1')   // not 0.0.0.0 unless intended",
+  'CWE-732': '// Least-privilege file mode:\nos.chmod(path, 0o600)   // not 0o777',
+  'CWE-770': '// Bounded heap allocation instead of alloca(n):\nchar *buf = malloc(n < MAX ? n : MAX)',
+  'CWE-787': '// Bounded write:\nsnprintf(dst, sizeof(dst), "%s", src)',
+  'CWE-798': '// Load from the environment / a secret manager:\nconst secret = process.env.JWT_SECRET',
+  'CWE-917': '// Upgrade Log4j >= 2.17, disable lookups; never interpolate ${...} from user input',
+  'CWE-942': "// Pin explicit origins; do not pair '*' with credentials:\ncors({ origin: ['https://app.example.com'], credentials: true })",
+  'CWE-1022': '// Add rel to target=_blank:\n<a href={url} target="_blank" rel="noopener noreferrer">',
+  'CWE-1188': '// Lock down the renderer:\nnew BrowserWindow({ webPreferences: { nodeIntegration: false, contextIsolation: true } })',
+  'CWE-1333': '// Bound match time / use a linear-time engine:\nnew Regex(pattern, RegexOptions.None, TimeSpan.FromSeconds(1))',
 };
+
+// Language-specific secure-pattern examples — preferred over the generic
+// SAST_FIX_EXAMPLE_BY_CWE above when a finding's language is known, so a Python
+// finding gets Python code and a Go finding gets Go code (not a generic JS
+// snippet). Falls back to the generic map for any (language, CWE) pair not
+// listed here, so coverage never regresses. Enterprise AI-autofix (#989) later
+// upgrades these to a context-aware patch of the user's actual line.
+const _JS_FIX = {
+  'CWE-22': "// Confine under a base dir, reject escapes:\nconst p = path.resolve(BASE, name);\nif (!p.startsWith(BASE + path.sep)) throw new Error('path traversal');",
+  'CWE-78': "// No shell — pass args as an argv array:\nexecFile('ls', ['-la', userInput], cb);",
+  'CWE-79': "// Render as text, or sanitize raw HTML:\nel.textContent = userInput;   // or: el.innerHTML = DOMPurify.sanitize(html)",
+  'CWE-89': "// Parameterized query — placeholders, never concat:\ndb.query('SELECT * FROM users WHERE id = $1', [id]);",
+  'CWE-94': "// Don't evaluate input; parse it:\nconst data = JSON.parse(input);",
+  'CWE-95': "// Replace eval/Function with a safe parser or allow-listed dispatch:\nconst result = JSON.parse(input);",
+  'CWE-295': "// Keep TLS verification on; trust the real CA chain:\nhttps.get(url, { rejectUnauthorized: true });",
+  'CWE-327': "// SHA-256 for hashing, AES-256-GCM for encryption:\ncrypto.createHash('sha256');\nconst c = crypto.createCipheriv('aes-256-gcm', key, iv);",
+  'CWE-338': "// Cryptographically secure RNG for tokens/keys/IVs:\nconst token = crypto.randomUUID();   // or crypto.randomBytes(32)",
+  'CWE-345': "// Pin the target origin (and verify event.origin on receipt):\nwin.postMessage(msg, 'https://app.example.com');   // not '*'",
+  'CWE-347': "// Verify with a pinned algorithm; never 'none':\njwt.verify(token, key, { algorithms: ['RS256'] });",
+  'CWE-502': "// Use a data-only format with schema validation:\nconst obj = JSON.parse(input);   // never node-serialize unserialize()",
+  'CWE-601': "// Allowlist redirect targets:\nif (!ALLOWED_PATHS.has(target)) target = '/';\nres.redirect(target);",
+  'CWE-614': "// Harden the cookie:\nres.cookie('sid', v, { httpOnly: true, secure: true, sameSite: 'lax' });",
+  'CWE-798': "// Load from env / a secret manager, never hardcode:\nconst secret = process.env.JWT_SECRET;\njwt.sign(payload, secret);",
+  'CWE-918': "// Allowlist the host before the request:\nif (!ALLOWED_HOSTS.has(new URL(url).host)) throw new Error('blocked host');\nawait fetch(url);",
+  'CWE-942': "// Pin explicit origins; never '*' with credentials:\ncors({ origin: ['https://app.example.com'], credentials: true });",
+  'CWE-943': "// Reject query operators from input; coerce to a typed value:\ndb.find({ user: String(input) });   // never { $where: input }",
+  'CWE-1188': "// Lock down the Electron renderer:\nnew BrowserWindow({ webPreferences: { nodeIntegration: false, contextIsolation: true } });",
+};
+const _C_FIX = {
+  'CWE-78': "// Absolute path + argv array — no PATH search, no shell:\nchar *const argv[] = {\"/bin/ls\", arg, NULL};\nexecv(\"/bin/ls\", argv);",
+  'CWE-120': "// Bounded copy with explicit destination size:\nstrlcpy(dst, src, sizeof(dst));\nsnprintf(dst, sizeof(dst), \"%s\", src);",
+  'CWE-134': "// Constant format string; data as args:\nprintf(\"%s\", userInput);   // never printf(userInput)",
+  'CWE-190': "// Overflow-safe allocation; checked integer parse:\nchar *p = calloc(n, size);   // not malloc(n * size)",
+  'CWE-242': "// gets() has no bound — use fgets with a size:\nfgets(buf, sizeof(buf), stdin);",
+  'CWE-252': "// Check the privilege-drop result and fail closed:\nif (setuid(uid) != 0) { perror(\"setuid\"); abort(); }",
+  'CWE-295': "// Keep TLS verification ON; trust the correct CA chain:\ncurl_easy_setopt(h, CURLOPT_SSL_VERIFYPEER, 1L);\ncurl_easy_setopt(h, CURLOPT_SSL_VERIFYHOST, 2L);",
+  'CWE-327': "// Use a modern algorithm — SHA-256+, never MD5/SHA-1:\nSHA256(data, len, out);",
+  'CWE-330': "// Reentrant, thread-safe tokenizer:\nchar *save;\nchar *tok = strtok_r(buf, \",\", &save);",
+  'CWE-338': "// Cryptographically secure RNG — not rand()/srand(time()):\nuint32_t r = arc4random();\ngetrandom(key, sizeof(key), 0);",
+  'CWE-377': "// Atomic temp file — never tmpnam/tempnam/mktemp:\nchar tmpl[] = \"/tmp/app-XXXXXX\";\nint fd = mkstemp(tmpl);",
+  'CWE-732': "// Least-privilege mode (owner only):\nchmod(path, 0600);   // not 0777 / 0666",
+  'CWE-770': "// Bounded heap allocation instead of alloca(n):\nif (n > MAX) n = MAX;\nchar *buf = malloc(n);   if (!buf) return -1;",
+  'CWE-787': "// Bound every write to the destination size:\nsnprintf(dst, sizeof(dst), \"%s\", src);",
+};
+const SAST_FIX_EXAMPLE_BY_LANG_CWE = {
+  python: {
+    'CWE-22': "# Confine under a base dir:\np = os.path.realpath(os.path.join(BASE, name))\nif not (p + os.sep).startswith(BASE + os.sep): raise ValueError('path traversal')",
+    'CWE-78': "# Pass argv as a list, no shell:\nsubprocess.run(['ls', '-l', user_dir], shell=False, check=True)",
+    'CWE-79': "# Let the template auto-escape; never mark_safe untrusted data:\nreturn render(request, 'p.html', {'name': name})  # not mark_safe(name)",
+    'CWE-89': "# Parameterized query (placeholders, not %/format/concat):\ncur.execute('SELECT * FROM users WHERE id = %s', (user_id,))",
+    'CWE-94': "# Render a fixed template; pass user data as context, never as the source:\nreturn render_template('page.html', name=name)",
+    'CWE-95': "# Replace eval/exec with a safe parser:\nimport ast\nvalue = ast.literal_eval(user_input)",
+    'CWE-183': "# Pin explicit hosts, not a wildcard:\nALLOWED_HOSTS = ['app.example.com']",
+    'CWE-295': "# Keep TLS verification on; trust the correct CA chain:\nrequests.get(url, verify=True)  # default ssl.create_default_context()",
+    'CWE-327': "# Use a modern algorithm — SHA-256+ for hashing, AES-GCM for ciphers:\nh = hashlib.sha256(data).hexdigest()",
+    'CWE-347': "# Verify the signature with a pinned algorithm allowlist:\njwt.decode(token, key, algorithms=['RS256'])  # never 'none'/verify_signature=False",
+    'CWE-352': "# Keep CSRF protection on — remove @csrf_exempt; use the {% csrf_token %} / per-session token",
+    'CWE-377': "# Atomic temp file (no TOCTOU):\nfd, path = tempfile.mkstemp()  # or tempfile.NamedTemporaryFile()",
+    'CWE-489': "# Drive debug from the environment, never hardcoded:\nDEBUG = os.environ.get('DEBUG') == '1'",
+    'CWE-502': "# Use a data-only loader (no arbitrary objects):\nobj = yaml.safe_load(text)  # or json.loads(text)",
+    'CWE-611': "# Disable external entities — use defusedxml:\nfrom defusedxml.ElementTree import parse\ntree = parse(src)  # or lxml XMLParser(resolve_entities=False)",
+    'CWE-614': "# Harden the session/CSRF cookie:\nSESSION_COOKIE_SECURE = True\nSESSION_COOKIE_HTTPONLY = True\nCSRF_COOKIE_SECURE = True",
+    'CWE-668': "# Bind to a specific interface, not all of them:\napp.run(host='127.0.0.1')  # not '0.0.0.0' unless intended",
+    'CWE-732': "# Least-privilege file mode:\nos.chmod(path, 0o600)  # not 0o777 / 0o666",
+    'CWE-798': "# Load secrets from the environment / a secret manager:\nSECRET_KEY = os.environ['SECRET_KEY']",
+    'CWE-918': "# Allowlist the host before the request:\nif urlparse(url).hostname not in ALLOWED_HOSTS: raise ValueError('blocked host')\nrequests.get(url)",
+  },
+  go: {
+    'CWE-22': "// Clean + confine under a base dir:\np := filepath.Join(base, name)\nif !strings.HasPrefix(p, filepath.Clean(base)+string(os.PathSeparator)) { return errors.New(\"path traversal\") }",
+    'CWE-78': "// Pass argv directly — no shell:\ncmd := exec.Command(\"ls\", \"-l\", userDir)  // not sh -c <string>",
+    'CWE-79': "// Let html/template auto-escape; never cast untrusted data:\nt.Execute(w, userInput)  // not template.HTML(userInput)",
+    'CWE-89': "// Parameterized query with placeholders:\nrow := db.QueryRow(\"SELECT * FROM users WHERE id = $1\", id)",
+    'CWE-200': "// Don't expose pprof on a public mux — register it on an internal, auth'd server, or omit in prod",
+    'CWE-276': "// Least-privilege mode:\nos.MkdirAll(dir, 0o750)  // not 0777",
+    'CWE-295': "// Keep host-key/cert verification on:\nhostKeyCallback, _ := knownhosts.New(\"known_hosts\")  // not ssh.InsecureIgnoreHostKey()",
+    'CWE-326': "// Require TLS 1.2+ / RSA >= 2048:\ncfg := &tls.Config{MinVersion: tls.VersionTLS12}",
+    'CWE-327': "// Use a modern algorithm — sha256 for hashing, AES-GCM for ciphers:\nsum := sha256.Sum256(data)",
+    'CWE-347': "// Verify with a pinned signing method; never 'none':\ntok, err := jwt.Parse(s, keyFunc, jwt.WithValidMethods([]string{\"RS256\"}))",
+    'CWE-668': "// Bind to a specific interface, not all of them:\nln, _ := net.Listen(\"tcp\", \"127.0.0.1:8080\")  // not 0.0.0.0",
+    'CWE-918': "// Allowlist the host before the request:\nif !allowedHosts[u.Hostname()] { return errors.New(\"blocked host\") }\nresp, err := http.Get(rawURL)",
+  },
+  java: {
+    'CWE-22': "// Confine under a base directory:\nPath base = Paths.get(\"/srv/data\").toRealPath();\nPath p = base.resolve(name).normalize();\nif (!p.startsWith(base)) throw new IOException(\"path traversal\");",
+    'CWE-78': "// Argv list, no shell — never a built string:\nProcessBuilder pb = new ProcessBuilder(\"ls\", \"-l\", userInput);\npb.start();",
+    'CWE-89': "// Parameterized query:\nPreparedStatement ps = conn.prepareStatement(\"SELECT * FROM users WHERE id = ?\");\nps.setInt(1, id);\nResultSet rs = ps.executeQuery();",
+    'CWE-90': "// Escape LDAP metacharacters / use a parameterized filter:\nString filter = \"(uid={0})\";\nctx.search(base, filter, new Object[]{ userInput }, controls);",
+    'CWE-94': "// Don't eval untrusted input — map to an allow-listed operation:\nRunnable op = ALLOWED_OPS.get(name);\nif (op == null) throw new IllegalArgumentException(\"unknown op\");\nop.run();",
+    'CWE-295': "// Keep TLS hostname + cert verification on — trust the correct CA chain:\nHttpsURLConnection c = (HttpsURLConnection) url.openConnection();\nc.setHostnameVerifier(HttpsURLConnection.getDefaultHostnameVerifier());",
+    'CWE-327': "// Modern algorithm — SHA-256 for hashing, AES-GCM for encryption:\nMessageDigest md = MessageDigest.getInstance(\"SHA-256\");\nCipher c = Cipher.getInstance(\"AES/GCM/NoPadding\");",
+    'CWE-330': "// Cryptographically secure RNG — let it self-seed:\nSecureRandom rng = new SecureRandom();\nbyte[] token = new byte[32];\nrng.nextBytes(token);",
+    'CWE-352': "// Keep Spring Security CSRF protection enabled:\nhttp.csrf(Customizer.withDefaults());",
+    'CWE-470': "// Map input to an allow-listed type — never Class.forName(userInput):\nClass<?> c = ALLOWED_TYPES.get(name);\nif (c == null) throw new IllegalArgumentException(\"type not allowed\");",
+    'CWE-502': "// Use a data-only format with schema validation, not native deserialization:\nObjectMapper om = new ObjectMapper();\nMyDto dto = om.readValue(json, MyDto.class);",
+    'CWE-601': "// Allow-list redirect targets:\nMap<String,String> ALLOWED = Map.of(\"home\", \"/home\");\nString dest = ALLOWED.getOrDefault(target, \"/\");\nresponse.sendRedirect(dest);",
+    'CWE-611': "// Disable DTDs / external entities:\nDocumentBuilderFactory f = DocumentBuilderFactory.newInstance();\nf.setFeature(\"http://apache.org/xml/features/disallow-doctype-decl\", true);\nf.setExpandEntityReferences(false);",
+    'CWE-614': "// Harden session cookies:\nCookie c = new Cookie(\"sid\", value);\nc.setSecure(true);\nc.setHttpOnly(true);",
+    'CWE-917': "// Upgrade Log4j >= 2.17; never log untrusted data through an interpolating layout:\nlog.info(\"user={}\", sanitize(userInput));",
+    'CWE-918': "// Allow-list the host before opening the connection:\nString host = new URI(target).getHost();\nif (!ALLOWED_HOSTS.contains(host)) throw new IOException(\"blocked host\");\nnew URL(target).openConnection();",
+    'CWE-942': "// Pin explicit origins, never a wildcard:\nconfig.setAllowedOrigins(List.of(\"https://app.example.com\"));",
+  },
+  csharp: {
+    'CWE-20': "// Keep ASP.NET request validation on; validate input against an allowlist:\nif (!Regex.IsMatch(input, \"^[a-zA-Z0-9_-]+$\")) return BadRequest();\n// do not use [ValidateInput(false)]",
+    'CWE-22': "// Confine under a base directory:\nvar baseDir = Path.GetFullPath(\"C:\\\\srv\\\\data\");\nvar full = Path.GetFullPath(Path.Combine(baseDir, name));\nif (!full.StartsWith(baseDir)) throw new UnauthorizedAccessException();",
+    'CWE-78': "// Pass args separately and validate against an allowlist — no shell string:\nvar psi = new ProcessStartInfo(\"ls\") { UseShellExecute = false };\npsi.ArgumentList.Add(userInput);\nProcess.Start(psi);",
+    'CWE-79': "// Encode untrusted values — avoid Html.Raw:\n@Html.Encode(model.Comment)   // or @model.Comment (auto-encoded)",
+    'CWE-89': "// Parameterized command:\nusing var cmd = new SqlCommand(\"SELECT * FROM Users WHERE Id = @id\", conn);\ncmd.Parameters.Add(new SqlParameter(\"@id\", id));\n// EF Core: db.Users.FromSqlInterpolated($\"... WHERE Id = {id}\")",
+    'CWE-90': "// Escape LDAP metacharacters before building the filter:\nvar safe = LdapEncoder.FilterEncode(userInput);\nvar searcher = new DirectorySearcher($\"(uid={safe})\");",
+    'CWE-94': "// Disable script + document() in XSLT:\nvar settings = new XsltSettings(enableDocumentFunction: false, enableScript: false);\nxslt.Load(stylesheet, settings, new XmlUrlResolver());",
+    'CWE-295': "// Do not bypass cert validation — leave the default callback in place:\nvar handler = new HttpClientHandler();   // validates by default",
+    'CWE-326': "// Require TLS 1.2+ and RSA >= 2048 (prefer ECDSA):\nvar opts = new SslClientAuthenticationOptions { EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13 };\nusing var rsa = RSA.Create(2048);",
+    'CWE-327': "// Modern algorithm — SHA256 for hashing, AES for encryption:\nusing var sha = SHA256.Create();\nusing var aes = Aes.Create();   // AES-GCM/CBC, not DES/3DES/ECB",
+    'CWE-338': "// Cryptographically secure RNG for tokens/keys/nonces:\nvar token = new byte[32];\nRandomNumberGenerator.Fill(token);",
+    'CWE-352': "// Keep anti-forgery on for state-changing actions:\n[HttpPost]\n[ValidateAntiForgeryToken]\npublic IActionResult Update(Model m) { }",
+    'CWE-502': "// Use a safe serializer with known types — not BinaryFormatter / TypeNameHandling:\nvar dto = JsonSerializer.Deserialize<MyDto>(json);\n// Json.NET: new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.None }",
+    'CWE-601': "// Allow-list redirect targets (local paths only):\nif (!Url.IsLocalUrl(returnUrl)) returnUrl = \"/\";\nreturn Redirect(returnUrl);",
+    'CWE-611': "// Prohibit DTDs + null the resolver:\nvar settings = new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null };\nusing var reader = XmlReader.Create(stream, settings);",
+    'CWE-614': "// Harden session cookies:\nResponse.Cookies.Append(\"sid\", value, new CookieOptions { Secure = true, HttpOnly = true, SameSite = SameSiteMode.Lax });",
+    'CWE-643': "// Parameterize XPath with variable bindings — never concatenate input:\nvar nav = doc.CreateNavigator();\nvar expr = nav.Compile(\"/users/user[@id=$id]\");",
+    'CWE-918': "// Allow-list the host before the request:\nvar host = new Uri(target).Host;\nif (!AllowedHosts.Contains(host)) throw new InvalidOperationException(\"blocked host\");\nawait httpClient.GetAsync(target);",
+    'CWE-942': "// Pin explicit origins, never AllowAnyOrigin/\"*\":\npolicy.WithOrigins(\"https://app.example.com\").AllowCredentials();",
+    'CWE-1333': "// Bound regex match time against ReDoS:\nvar re = new Regex(pattern, RegexOptions.None, TimeSpan.FromSeconds(1));",
+  },
+  javascript: _JS_FIX,
+  typescript: _JS_FIX,
+  tsx: { ..._JS_FIX, 'CWE-1022': "// Reverse-tabnabbing guard on target=_blank:\n<a href={url} target=\"_blank\" rel=\"noopener noreferrer\">" },
+  c: _C_FIX,
+  cpp: _C_FIX,
+};
+
+// Derive the rule language from the finding's file extension so we can pick the
+// language-specific fix example. .h defaults to C (the c/cpp examples align).
+const _EXT_TO_LANG = {
+  py: 'python', go: 'go', java: 'java', cs: 'csharp',
+  js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'javascript',
+  ts: 'typescript', tsx: 'tsx',
+  c: 'c', h: 'c', cpp: 'cpp', cc: 'cpp', cxx: 'cpp', hpp: 'cpp', hxx: 'cpp',
+};
+function langFromFile(file) {
+  const ext = String(file || '').toLowerCase().split('.').pop();
+  return _EXT_TO_LANG[ext] || null;
+}
+
+/** True when a LANGUAGE-IDIOMATIC fix example exists for (language, cwe) — used
+ *  by the discipline test so a new rule can't ship a CWE without a per-language
+ *  fix (it would otherwise silently fall back to the generic class example). */
+export function hasLanguageSpecificFix(language, cwe) {
+  const byLang = SAST_FIX_EXAMPLE_BY_LANG_CWE[language];
+  return Boolean(byLang && byLang[cwe]);
+}
 
 /**
  * Produce a suggested fix for a SAST finding.
@@ -300,7 +613,7 @@ const SAST_FIX_EXAMPLE_BY_CWE = {
  *    mechanical rewrite.
  * Returns null when neither applies. `matched` is the exact matched substring.
  */
-export function suggestSastFix(cwe, matched) {
+export function suggestSastFix(cwe, matched, language) {
   const src = typeof matched === 'string' ? matched : '';
   let fixed = src;
 
@@ -325,7 +638,10 @@ export function suggestSastFix(cwe, matched) {
   }
 
   if (fixed !== src) return { kind: 'AUTOFIX', original: src, code: fixed };
-  const example = SAST_FIX_EXAMPLE_BY_CWE[cwe];
+  // Prefer a language-idiomatic example; fall back to the generic class example.
+  const example =
+    (language && SAST_FIX_EXAMPLE_BY_LANG_CWE[language] && SAST_FIX_EXAMPLE_BY_LANG_CWE[language][cwe]) ||
+    SAST_FIX_EXAMPLE_BY_CWE[cwe];
   if (example) return { kind: 'EXAMPLE', code: example };
   return null;
 }
@@ -382,13 +698,101 @@ export function normalizeAstGrepResults(json, { repoRoot = '' } = {}) {
         // Suggested fix: deterministic before→after for weak-API/config rules,
         // a canonical secure example for the injection classes. matched text is
         // the exact substring ast-grep flagged.
-        fix: suggestSastFix(cwe, m.text),
+        fix: suggestSastFix(cwe, m.text, langFromFile(m.file)),
       },
     };
     finding.identityKey = buildIdentityKey(finding);
     findings.push(finding);
   }
   return findings;
+}
+
+// ── IaC suggested-fix (trivy config + bicep) ─────────────────────────────────
+// Trivy's `Resolution` is captured as the finding's remediation TEXT, but the UI
+// also has a dedicated "Suggested Fix" code block (evidence.fix) that — until
+// now — only SAST populated. IaC findings showed the offending config + guidance
+// text but no corrected CODE. This curated map gives the common cloud misconfigs
+// (Azure-weighted: storage / network / Key Vault / identity — the Azure
+// customer's surface — plus high-frequency AWS / Dockerfile / K8s rules) an
+// illustrative corrected snippet, keyed on Trivy's stable rule IDs (AVD-* /
+// AZU-* / DS-* / the AVD aliases). EXAMPLE-kind, same storage shape as SAST, so
+// the existing UI renderer shows it unchanged. Snippets are Bicep/HCL-flavored
+// illustrations (kind=EXAMPLE = "secure pattern", not a literal patch); the
+// long tail falls back to the Resolution text already in `remediation`.
+const IAC_FIX_BY_RULE = {
+  // Azure Storage
+  'AVD-AZU-0008': "// Enforce HTTPS-only transport:\nsupportsHttpsTrafficOnly: true",
+  'AVD-AZU-0011': "// Require TLS 1.2 as the floor:\nminimumTlsVersion: 'TLS1_2'",
+  'AVD-AZU-0012': "// Default-deny network access, allow-list explicitly:\nnetworkAcls: { defaultAction: 'Deny' }",
+  'AVD-AZU-0007': "// Disable anonymous blob/container public access:\nallowBlobPublicAccess: false",
+  'AVD-AZU-0010': "// Turn on blob soft-delete retention:\ndeleteRetentionPolicy: { enabled: true, days: 7 }",
+  'AVD-AZU-0056': "// Enable blob soft-delete so deletes are recoverable:\nblobServices: { deleteRetentionPolicy: { enabled: true, days: 7 } }",
+  'AVD-AZU-0057': "// Enable diagnostic logging (read/write/delete) on the account:\n// configure a Microsoft.Insights/diagnosticSettings resource for the storage account",
+  'AVD-AZU-0058': "// Use geo-redundant replication for durability:\nsku: { name: 'Standard_GRS' }",
+  'AVD-AZU-0061': "// Enable infrastructure (double) encryption at rest:\nencryption: { requireInfrastructureEncryption: true }",
+  // Azure Key Vault
+  'AVD-AZU-0013': "// Enable Key Vault soft-delete + purge protection:\nproperties: { enableSoftDelete: true, enablePurgeProtection: true }",
+  'AVD-AZU-0016': "// Set an expiry on every key/secret:\nattributes: { exp: <unix-timestamp> }",
+  'AVD-AZU-0017': "// Default-deny Key Vault network access:\nnetworkAcls: { defaultAction: 'Deny', bypass: 'AzureServices' }",
+  // Azure compute / identity / SQL
+  'AVD-AZU-0039': "// Use a customer-managed key for disk encryption:\nencryption: { type: 'EncryptionAtRestWithCustomerKey' }",
+  'AVD-AZU-0038': "// Enable system-assigned managed identity instead of static creds:\nidentity: { type: 'SystemAssigned' }",
+  // AWS is covered by the generated corpus (IAC_FIX_GENERATED) — richer, authoritative.
+  // Dockerfile (DS) — locally verified: a bad Dockerfile fires DS-0001/0002/0013/0017/0026,
+  // the fixed one below clears all five (trivy config).
+  'AVD-DS-0001': "# Pin a specific version, not :latest:\nFROM node:25.1.0",
+  'AVD-DS-0002': "# Run as a non-root user:\nRUN adduser --disabled-password --uid 10001 app\nUSER app",
+  'AVD-DS-0013': "# Use WORKDIR instead of 'RUN cd':\nWORKDIR /app",
+  'AVD-DS-0017': "# Combine update+install in one layer so the apt cache can't go stale:\nRUN apt-get update && apt-get install -y --no-install-recommends <pkg> && rm -rf /var/lib/apt/lists/*",
+  'AVD-DS-0026': "# Declare a HEALTHCHECK:\nHEALTHCHECK --interval=30s CMD curl -fsS http://localhost/ || exit 1",
+  // Kubernetes (KSV) — locally verified: a maximally-bad Pod fires 19 of prod's KSV
+  // rules, and the secured Pod these slices come from clears all 19 (trivy config).
+  'AVD-KSV-0001': "# Disallow privilege escalation:\nsecurityContext:\n  allowPrivilegeEscalation: false",
+  'AVD-KSV-0003': "# Drop all Linux capabilities (add back only what's needed):\nsecurityContext:\n  capabilities:\n    drop: [\"ALL\"]",
+  'AVD-KSV-0004': "# Drop all Linux capabilities:\nsecurityContext:\n  capabilities:\n    drop: [\"ALL\"]",
+  'AVD-KSV-0006': "# Do NOT mount the host docker.sock (container escape); use a PVC/emptyDir",
+  'AVD-KSV-0011': "# Limit CPU:\nresources:\n  limits:\n    cpu: \"500m\"",
+  'AVD-KSV-0012': "# Run as non-root:\nsecurityContext:\n  runAsNonRoot: true",
+  'AVD-KSV-0013': "# Pin an immutable tag/digest, not :latest:\nimage: nginx:1.27.4",
+  'AVD-KSV-0014': "# Read-only root filesystem:\nsecurityContext:\n  readOnlyRootFilesystem: true",
+  'AVD-KSV-0015': "# Request CPU:\nresources:\n  requests:\n    cpu: \"100m\"",
+  'AVD-KSV-0016': "# Request memory:\nresources:\n  requests:\n    memory: \"128Mi\"",
+  'AVD-KSV-0018': "# Limit memory:\nresources:\n  limits:\n    memory: \"256Mi\"",
+  'AVD-KSV-0020': "# Run with a high UID (> 10000):\nsecurityContext:\n  runAsUser: 10001",
+  'AVD-KSV-0021': "# Run with a high GID (> 10000):\nsecurityContext:\n  runAsGroup: 10001",
+  'AVD-KSV-0023': "# Remove hostPath volumes (node-filesystem escape); use emptyDir/PVC",
+  'AVD-KSV-0030': "# Set the seccomp profile:\nsecurityContext:\n  seccompProfile:\n    type: RuntimeDefault",
+  'AVD-KSV-0104': "# Enable seccomp:\nsecurityContext:\n  seccompProfile:\n    type: RuntimeDefault",
+  'AVD-KSV-0106': "# Drop ALL capabilities; add back only NET_BIND_SERVICE if required:\nsecurityContext:\n  capabilities:\n    drop: [\"ALL\"]",
+  'AVD-KSV-0110': "# Don't deploy into the default namespace:\nmetadata:\n  namespace: app",
+  'AVD-KSV-0118': "# Set an explicit securityContext (runAsNonRoot + drop caps + read-only fs + seccomp)",
+};
+
+// Trivy emits rule IDs as both AVD-AZU-0008 and the short AZU-0008 across
+// versions/checks. Normalize to the AVD-prefixed key for the lookup.
+function iacFixKey(ruleId) {
+  const id = String(ruleId || '').toUpperCase();
+  if (id.startsWith('AVD-')) return id;
+  if (/^(AZU|AWS|GCP|DS|KSV|KCV)-\d+/.test(id)) return `AVD-${id}`;
+  return id;
+}
+
+/**
+ * Suggested fix for an IaC misconfiguration. Returns an EXAMPLE-kind corrected
+ * snippet for curated cloud rules, else null (the Resolution text already lives
+ * in `remediation`, so we don't weakly duplicate it as a "fix"). Exported for
+ * unit testing + reuse by the bicep engine path (both go through
+ * normalizeTrivyConfigResults).
+ */
+export function suggestIacFix(ruleId) {
+  const key = iacFixKey(ruleId);
+  // Hand-verified overrides win (K8s/Docker locally-verified, Azure-Bicep for the
+  // customer's IaC flavor) — then the authoritative Aqua-generated corpus.
+  const curated = IAC_FIX_BY_RULE[key];
+  if (curated) return { kind: 'EXAMPLE', code: curated };
+  const gen = IAC_FIX_GENERATED[key];
+  if (gen) return { kind: gen.kind, code: gen.code, ...(gen.lang ? { lang: gen.lang } : {}) };
+  return null;
 }
 
 // ── IaC (trivy config) ───────────────────────────────────────────────────
@@ -450,6 +854,14 @@ export function normalizeTrivyConfigResults(json, { repoRoot = '' } = {}) {
           configType,
           primaryUrl: m.PrimaryURL || null,
           references: Array.isArray(m.References) ? m.References.slice(0, 5) : [],
+          // Fix block, 100% coverage (parity floor): a corrected-code EXAMPLE for
+          // checks in the curated/generated corpus, else Trivy's Resolution as
+          // GUIDANCE text. Never empty, never a wrong snippet.
+          ...((() => {
+            const codeFix = suggestIacFix(m.ID);
+            const fix = codeFix || (m.Resolution ? { kind: 'GUIDANCE', code: clip(m.Resolution, 600) } : null);
+            return fix ? { fix } : {};
+          })()),
         },
       };
       finding.identityKey = buildIdentityKey(finding);
@@ -537,14 +949,19 @@ export function normalizeTrivyImageResults(json, { image, dockerfile = null, lin
 //   'cvss-score' } }, type, host, 'matched-at', 'matcher-name',
 //   'extracted-results' }.
 //
-// Severity: prefer the CVSS score bucket, else Nuclei's qualitative word. Nuclei
-// 'info' (tech detection / fingerprints) maps to UNKNOWN — real but low-signal;
-// the UI deprioritizes it (the noise-reduction posture Aikido/Cycode lead on).
+// Severity: prefer the CVSS score bucket, else Nuclei's qualitative word.
+// Nuclei 'info' is a RATING (its lowest real tier — e.g. missing security
+// headers, cache-control, suspicious comments), NOT "severity unknown". Our
+// FindingSeverity enum has no INFO tier, so 'info' maps to LOW (matching
+// SEVERITY_BY_ASTGREP, where ast-grep 'info' already → LOW). Only Nuclei's
+// explicit 'unknown' stays UNKNOWN. Pure-recon templates (tech/waf/ssl
+// fingerprints) are low-signal noise — filtered by tag upstream, not by
+// burying them in UNKNOWN.
 //
 // SECURITY: `extracted-results` can echo live response content, so it is clipped
 // (80 chars × max 5) — never store raw/large extracted payloads.
 const NUCLEI_SEVERITY = {
-  critical: 'CRITICAL', high: 'HIGH', medium: 'MEDIUM', low: 'LOW', info: 'UNKNOWN', unknown: 'UNKNOWN',
+  critical: 'CRITICAL', high: 'HIGH', medium: 'MEDIUM', low: 'LOW', info: 'LOW', unknown: 'UNKNOWN',
 };
 
 function stripQuery(u) {
@@ -638,9 +1055,10 @@ export function normalizeNucleiResults(records, { target } = {}) {
 
 // ── ZAP (OWASP ZAP active/passive DAST) ──────────────────────────────────────
 // ZAP riskcode → canonical severity. ZAP: 3=High, 2=Medium, 1=Low,
-// 0=Informational. FindingSeverity has no INFO, so informational collapses to
-// UNKNOWN (same as the nuclei info-tier).
-const ZAP_RISK_SEVERITY = { 3: 'HIGH', 2: 'MEDIUM', 1: 'LOW', 0: 'UNKNOWN' };
+// 0=Informational. FindingSeverity has no INFO tier, so 0=Informational maps to
+// LOW (a rating, not "unknown" — mirrors the nuclei info→LOW + ast-grep info→LOW
+// convention). Genuinely-unrated findings are the only ones that stay UNKNOWN.
+const ZAP_RISK_SEVERITY = { 3: 'HIGH', 2: 'MEDIUM', 1: 'LOW', 0: 'LOW' };
 const ZAP_CONFIDENCE = { 0: 'false-positive', 1: 'low', 2: 'medium', 3: 'high', 4: 'confirmed' };
 
 // ZAP `desc`/`solution`/`reference` are HTML fragments (<p>…</p>). Strip tags,

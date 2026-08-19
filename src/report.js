@@ -21,7 +21,7 @@ function toWire(f) {
 /**
  * @returns the request body the ingest API expects.
  */
-export function buildPayload({ source, repo, commit, scanType, failOn, findings, prComment = 'none' }) {
+export function buildPayload({ source, repo, commit, scanType, failOn, findings, prComment = 'none', suppressed = null }) {
   return {
     source,
     scanType,
@@ -39,6 +39,12 @@ export function buildPayload({ source, repo, commit, scanType, failOn, findings,
       defaultBranch: repo.defaultBranch,
     },
     commit,
+    // What .shadowspanignore removed BEFORE reporting, with per-rule counts. Sent so the platform
+    // can show "142 findings suppressed by `**`" instead of silently showing a clean scan — the
+    // repo file is a developer convenience, but it must not be an invisible one.
+    suppressed: suppressed && suppressed.count > 0
+      ? { count: suppressed.count, rules: (suppressed.rules || []).slice(0, 50) }
+      : null,
     findings: findings.map(toWire),
   };
 }

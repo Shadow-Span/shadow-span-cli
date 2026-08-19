@@ -1,10 +1,16 @@
 // Run the local engines over a checkout and collect normalized findings.
 // Engines live in the VENDORED kernel at ./engine (a verbatim copy of the
-// platform's the Shadow Span AppSec engine, kept in sync by
-// the sync tooling). Vendored — not a workspace dep — so this
+// platform's @shadow-span/appsec-engine, kept in sync by
+// scripts/sync-shadow-span-cli.mjs). Vendored — not a workspace dep — so this
 // CLI is self-contained and can be lifted into its own public repo. They shell
 // out to the engine binaries on PATH (gitleaks / ast-grep / osv-scanner / trivy).
 
+// REACHABILITY IS SERVER-SIDE ONLY, for both analyses. The engines here produce findings; the
+// whole-tree passes that rank them (services/appsec/src/{sast,sca}-reachability.js) need the full
+// source tree and the tree-sitter grammars, which a globally-installed CLI should not carry. SAST
+// reachability has always worked this way; SCA joined it in 2026-08 when the tier stopped being a
+// per-engine grep. CLI findings therefore carry `dependencyDepth` (manifest-derived, cheap, local)
+// and no reachability tier — the server stamps one when the same repo is scanned there.
 import { scanSecrets, scanSca, scanSast, scanIac } from '../engine/src/index.js';
 
 export const ENGINE_RUNNERS = Object.freeze({

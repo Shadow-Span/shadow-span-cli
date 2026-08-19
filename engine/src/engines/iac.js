@@ -15,6 +15,7 @@ import { promisify } from 'node:util';
 import { readFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { normalizeTrivyConfigResults } from '../normalize.js';
 import { attachCodeContext } from '../code-context.js';
@@ -28,6 +29,37 @@ const IAC_TIMEOUT_MS = parseInt(process.env.APPSEC_IAC_TIMEOUT_MS || `${10 * 60 
 // into /usr/local/bin; locally `brew install trivy`). APPSEC_TRIVY_BIN overrides.
 const TRIVY_BIN = process.env.APPSEC_TRIVY_BIN || 'trivy';
 
+// Our own Rego rule pack (rules/iac/**/*.rego), authored in the `user` namespace.
+// Runs ALONGSIDE Trivy's built-in checks (augment, don't fork) — built-ins cover
+// the long tail, our SS-* rules close measured gaps (e.g. wildcard-admin IAM) and
+// own the remediation/fix content. Compliance mappings for BOTH built-in and our
+// findings are attached in normalize.js from rules/iac/mappings.json.
+// Pack location: normally resolved relative to this module (…/appsec-engine/rules/iac).
+// APPSEC_IAC_PACK_DIR overrides it — needed where the runtime can't reach the
+// package's rules/ dir by relative path (e.g. the Next.js web standalone build,
+// whose Turbopack tracer rejects out-of-project globs). There the Dockerfile
+// copies the pack to a fixed path and points this env var at it.
+const PACK_DIR = process.env.APPSEC_IAC_PACK_DIR
+  || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'rules', 'iac');
+const MAPPINGS_PATH = path.join(PACK_DIR, 'mappings.json');
+
+// rule id → compliance-control mapping, loaded once from the pack sidecar. We
+// attach it HERE (the engine wrapper already does I/O) rather than in
+// normalize.js, which is a pure/no-I/O module by contract. Covers Trivy built-in
+// AVD ids AND our SS-* ids, so every finding — built-in or ours — carries the
+// frameworks/category it maps to (empty for the long-tail built-ins not yet
+// promoted into mappings.json).
+let _mappings;
+async function loadMappings() {
+  if (_mappings) return _mappings;
+  try {
+    _mappings = JSON.parse(await readFile(MAPPINGS_PATH, 'utf8'));
+  } catch {
+    _mappings = {}; // pack sidecar missing/corrupt → findings still flow, just unmapped
+  }
+  return _mappings;
+}
+
 /**
  * Run `trivy config` against a checked-out repo directory.
  * @returns {Promise<Array>} normalized AppSecFinding-shaped rows (type=IAC)
@@ -38,6 +70,8 @@ export async function scanIac(repoPath) {
   try {
     const args = [
       'config',
+      '--config-check', PACK_DIR,   // load our Rego pack (rules/iac/**) …
+      '--check-namespaces', 'user', // …evaluated under the `user` namespace, alongside built-ins
       '--format', 'json',
       '--output', reportPath,
       '--quiet',          // suppress the progress/db-download chatter on stdout
@@ -62,6 +96,15 @@ export async function scanIac(repoPath) {
     const raw = await readFile(reportPath, 'utf8');
     const json = raw.trim() ? JSON.parse(raw) : {};
     const findings = normalizeTrivyConfigResults(json, { repoRoot: repoPath });
+    // Attach compliance frameworks + category by rule id (built-in AVD or SS-*).
+    const mappings = await loadMappings();
+    for (const f of findings) {
+      const m = mappings[f.ruleId] || mappings[f.evidence?.avdId];
+      if (m) {
+        if (m.frameworks) f.frameworks = m.frameworks;
+        if (m.category) f.evidence.category = m.category;
+      }
+    }
     // Enrich with the ±3-line code window + the introducing commit (git blame).
     await attachCodeContext(findings, repoPath);
     await attachBlame(findings, repoPath);

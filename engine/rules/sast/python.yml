@@ -12,6 +12,13 @@ severity: error
 message: eval() runs arbitrary code — code-injection sink with any non-constant input (CWE-95).
 rule:
   pattern: eval($ARG)
+constraints:
+  ARG:
+    not:
+      any:
+        - kind: string
+        - kind: integer
+        - kind: float
 ---
 id: py-exec-call
 language: python
@@ -19,6 +26,13 @@ severity: error
 message: exec() runs arbitrary code — code-injection sink with any non-constant input (CWE-95).
 rule:
   pattern: exec($ARG)
+constraints:
+  ARG:
+    not:
+      any:
+        - kind: string
+        - kind: integer
+        - kind: float
 
 # ── Server-side template injection (CWE-94) ─────────────────────────────────
 ---
@@ -201,3 +215,162 @@ rule:
   any:
     - pattern: open($A + $B)
     - pattern: open($A + $B, $MODE)
+
+# ── Archive extraction / zip-slip (CWE-22) ──────────────────────────────────
+---
+id: py-archive-extractall
+language: python
+severity: warning
+message: extractall() on a tar/zip archive can write outside the destination via crafted member paths (zip-slip / path traversal). Validate each member is under the target dir, or pass filter='data' on Python 3.12+ (CWE-22).
+rule:
+  pattern: $ARCHIVE.extractall($$$ARGS)
+
+# ── Django/Flask misconfiguration ───────────────────────────────────────────
+---
+id: py-django-debug-true
+language: python
+severity: error
+message: DEBUG = True in a Django settings module leaks stack traces, settings, and SQL to end users in production (CWE-489).
+rule:
+  pattern: DEBUG = True
+---
+id: py-django-allowed-hosts-wildcard
+language: python
+severity: warning
+message: ALLOWED_HOSTS = ["*"] disables Django's Host-header validation, enabling host-header poisoning / cache attacks (CWE-183).
+rule:
+  pattern: ALLOWED_HOSTS = ["*"]
+---
+id: py-django-secret-key-hardcoded
+language: python
+severity: error
+message: SECRET_KEY assigned a string literal is committed to source control — anyone with repo access can forge sessions/CSRF tokens. Load it from the environment or a secret store (CWE-798).
+rule:
+  pattern: SECRET_KEY = $V
+constraints:
+  V: { kind: string }
+---
+id: py-flask-secret-key-hardcoded
+language: python
+severity: error
+message: Flask secret_key assigned a string literal lets anyone with repo access forge signed sessions. Load it from the environment or a secret store (CWE-798).
+rule:
+  any:
+    - pattern: $APP.secret_key = $V
+    - pattern: $APP.config["SECRET_KEY"] = $V
+constraints:
+  V: { kind: string }
+---
+id: py-django-csrf-exempt
+language: python
+severity: error
+message: "@csrf_exempt removes CSRF protection from a view — state-changing endpoints become forgeable. Remove it or scope protection explicitly (CWE-352)."
+rule:
+  pattern: "@csrf_exempt"
+---
+id: py-django-session-cookie-insecure
+language: python
+severity: warning
+message: Disabling a secure cookie flag lets the session/CSRF cookie travel over plaintext or be read by JavaScript (CWE-614).
+rule:
+  any:
+    - pattern: SESSION_COOKIE_SECURE = False
+    - pattern: CSRF_COOKIE_SECURE = False
+    - pattern: SESSION_COOKIE_HTTPONLY = False
+---
+id: py-flask-debug-true
+language: python
+severity: error
+message: Running a web app with debug=True exposes the Werkzeug interactive debugger (arbitrary code execution via the console PIN) and must never reach production (CWE-489).
+rule:
+  pattern:
+    context: "f(debug=True)"
+    selector: keyword_argument
+
+# ── JWT signature bypass (CWE-347) ──────────────────────────────────────────
+---
+id: py-jwt-verify-disabled
+language: python
+severity: error
+message: jwt.decode with verify_signature disabled accepts any token — authentication is bypassed. Verify the signature with the correct key and algorithms (CWE-347).
+rule:
+  pattern:
+    context: 'd = {"verify_signature": False}'
+    selector: pair
+---
+id: py-jwt-alg-none
+language: python
+severity: error
+message: Allowing the "none" JWT algorithm accepts unsigned tokens — any attacker can mint a valid-looking JWT. Pin a strong algorithm allowlist (CWE-347).
+rule:
+  pattern:
+    context: 'f(algorithms=["none"])'
+    selector: keyword_argument
+
+# ── SSH host-key verification disabled (CWE-295) ────────────────────────────
+---
+id: py-paramiko-autoadd-policy
+language: python
+severity: error
+message: AutoAddPolicy/WarningPolicy auto-accepts unknown SSH host keys, enabling man-in-the-middle on the connection. Use RejectPolicy with a known_hosts file (CWE-295).
+rule:
+  any:
+    - pattern: paramiko.AutoAddPolicy()
+    - pattern: paramiko.WarningPolicy()
+    - pattern: AutoAddPolicy()
+
+# ── World-writable permissions (CWE-732) ────────────────────────────────────
+---
+id: py-os-chmod-world-writable
+language: python
+severity: warning
+message: chmod with a world-writable/-readable mode (0o777 / 0o666) exposes the file to every local user. Grant the least privilege required (CWE-732).
+rule:
+  any:
+    - pattern: os.chmod($X, 0o777)
+    - pattern: os.chmod($X, 0o666)
+
+# ── Bind to all interfaces (CWE-668) ────────────────────────────────────────
+---
+id: py-bind-all-interfaces
+language: python
+severity: warning
+message: Binding a service to 0.0.0.0 exposes it on every network interface — ensure that is intended and firewalled (CWE-668).
+rule:
+  pattern:
+    context: 'f(host="0.0.0.0")'
+    selector: keyword_argument
+
+# ── Weak crypto — explicit construction (CWE-327) ───────────────────────────
+---
+id: py-hashlib-new-weak
+language: python
+severity: warning
+message: hashlib.new() with a broken algorithm (MD5/SHA-1/MD4) is unsuitable for security — use SHA-256 or stronger (CWE-327).
+rule:
+  any:
+    - pattern: hashlib.new("md5")
+    - pattern: hashlib.new("sha1")
+    - pattern: hashlib.new("md4")
+---
+id: py-pycrypto-weak-cipher
+language: python
+severity: warning
+message: DES/RC4/Blowfish are broken or deprecated ciphers — use AES-GCM or another modern AEAD construction (CWE-327).
+rule:
+  any:
+    - pattern: DES.new($$$A)
+    - pattern: ARC4.new($$$A)
+    - pattern: Blowfish.new($$$A)
+
+# ── Unsafe YAML loader — explicit (CWE-502) ─────────────────────────────────
+---
+id: py-yaml-unsafe-loader
+language: python
+severity: error
+message: yaml.load with Loader=Loader/UnsafeLoader can instantiate arbitrary Python objects from untrusted YAML — use yaml.safe_load / SafeLoader (CWE-502).
+rule:
+  any:
+    - pattern: yaml.load($X, Loader=yaml.Loader)
+    - pattern: yaml.load($X, Loader=yaml.UnsafeLoader)
+    - pattern: yaml.load($X, Loader=Loader)

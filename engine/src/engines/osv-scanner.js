@@ -1,7 +1,7 @@
 // SCA engine — osv-scanner (Apache-2.0, Google).
 //
 // Same OSV.dev dataset our intel pipeline already queries
-// (the Shadow Span platform), so SCA
+// (apps/web/src/lib/intelligence/sources/vuln.js#fetchOsvRemediation), so SCA
 // findings join existing Vulnerability rows via CVE alias with zero new feed
 // plumbing.
 //
@@ -16,11 +16,37 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { normalizeOsvResults } from '../normalize.js';
-import { enrichReachability } from '../lib/reachability.js';
+import { enrichDependencyDepth } from '../lib/reachability.js';
 
 const execFileAsync = promisify(execFile);
 
 const OSV_TIMEOUT_MS = parseInt(process.env.APPSEC_OSV_TIMEOUT_MS || `${10 * 60 * 1000}`, 10);
+
+// ── Offline OSV matching (#981 L1, flag-gated, DEFAULT OFF) ──────────────────
+// When APPSEC_OSV_OFFLINE=true, osv-scanner matches against a LOCALLY-mirrored OSV
+// database (populated daily into APPSEC_OSV_DB_DIR by the OSV→GCS mirror job)
+// instead of calling the OSV.dev API per scan. This removes the per-scan external
+// SPOF + rate-limit + latency. Default OFF = today's live-API behaviour — so the
+// flag IS the runtime rollback.
+//
+// osv-scanner v2.3.8 (verified) has NO --local-db-path flag — it reads/writes its
+// offline DB under os.UserCacheDir() = $XDG_CACHE_HOME/osv-scanner/. So we point
+// XDG_CACHE_HOME at APPSEC_OSV_DB_DIR (the daily mirror job pre-populates
+// $APPSEC_OSV_DB_DIR/osv-scanner/). `--offline-vulnerabilities` matches against the
+// ALREADY-cached DB and does NOT hit the network; we deliberately do NOT pass
+// --download-offline-databases in the scan path (scans are read-only against the
+// shared snapshot). Args stay env-overridable for forward-compat across versions.
+const OSV_OFFLINE = process.env.APPSEC_OSV_OFFLINE === 'true';
+const OSV_OFFLINE_ARGS = (process.env.APPSEC_OSV_OFFLINE_ARGS || '--offline-vulnerabilities')
+  .split(/\s+/)
+  .filter(Boolean);
+const OSV_DB_DIR = process.env.APPSEC_OSV_DB_DIR || '/var/osv-db';
+
+/** Child-process env for an osv-scanner run — points the offline DB cache at our mirror. */
+function osvEnv() {
+  if (!OSV_OFFLINE) return process.env;
+  return { ...process.env, XDG_CACHE_HOME: OSV_DB_DIR };
+}
 
 /**
  * Run osv-scanner against a checked-out repo directory.
@@ -46,11 +72,14 @@ export async function scanSca(repoPath) {
     // zero sources. Set APPSEC_OSV_NO_IGNORE=true to disable ignore handling
     // in that situation.
     if (process.env.APPSEC_OSV_NO_IGNORE === 'true') args.push('--no-ignore');
+    // Offline OSV matching (#981 L1) — flag-gated, default OFF (see top of file).
+    if (OSV_OFFLINE) args.push(...OSV_OFFLINE_ARGS);
     args.push(repoPath);
     try {
       await execFileAsync('osv-scanner', args, {
         timeout: OSV_TIMEOUT_MS,
         maxBuffer: 16 * 1024 * 1024,
+        env: osvEnv(),
       });
     } catch (err) {
       // exit 1 = "vulnerabilities were found" — the report file is valid.
@@ -62,12 +91,13 @@ export async function scanSca(repoPath) {
     const raw = await readFile(reportPath, 'utf8');
     const json = JSON.parse(raw);
     const findings = normalizeOsvResults(json, { repoRoot: repoPath });
-    // Reachability-lite: classify each vuln dep as DIRECT vs TRANSITIVE from the
-    // sibling manifest (noise-reduction prioritization). Best-effort — never throws.
+    // DIRECT vs TRANSITIVE from the sibling manifest. Reachability itself is a whole-tree question
+    // and is annotated later by the runner (services/appsec/src/sca-reachability.js), which is the
+    // only place that can scope evidence to the right module. Best-effort — never throws.
     try {
-      await enrichReachability(findings, repoPath);
+      await enrichDependencyDepth(findings, repoPath);
     } catch (err) {
-      console.warn(`[APPSEC] reachability enrichment skipped: ${err.message}`);
+      console.warn(`[APPSEC] dependency-depth enrichment skipped: ${err.message}`);
     }
     return findings;
   } finally {

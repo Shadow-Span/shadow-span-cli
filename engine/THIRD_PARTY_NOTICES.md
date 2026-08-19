@@ -21,10 +21,15 @@ Shadow Span, no redistribution obligation applies.
 - Copyright © Herrington Darkholme and ast-grep contributors
 - Project: https://github.com/ast-grep/ast-grep
 
-## Nuclei — dynamic scanning (DAST)
+## Nuclei — dynamic scanning (DAST, passive detection)
 - License: MIT
 - Copyright © ProjectDiscovery, Inc.
 - Project: https://github.com/projectdiscovery/nuclei
+
+## OWASP ZAP — dynamic scanning (DAST, ACTIVE attack scan)
+- License: Apache License 2.0
+- Copyright © the OWASP ZAP project contributors / The OWASP Foundation
+- Project: https://github.com/zaproxy/zaproxy
 
 ## osv-scanner — software composition analysis (SCA)
 - License: Apache License 2.0
@@ -60,7 +65,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## Apache License 2.0 (osv-scanner, Trivy)
+## Apache License 2.0 (osv-scanner, Trivy, OWASP ZAP)
 
 These components are licensed under the Apache License, Version 2.0. The full
 license text is available at: https://www.apache.org/licenses/LICENSE-2.0

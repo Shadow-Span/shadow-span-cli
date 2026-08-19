@@ -12,6 +12,7 @@ into Shadow Span's own finding format.
 | Trivy | IaC misconfiguration | Apache-2.0 |
 
 Full license + copyright text for each tool is reproduced in
-`engine/THIRD_PARTY_NOTICES.md`, which ships in every distributed artifact (npm
-package + Docker image) that bundles these binaries. When a binary is already
-present on your PATH (not distributed by us), no redistribution obligation applies.
+`@shadow-span/appsec-engine`'s `THIRD_PARTY_NOTICES.md`, which ships in every
+distributed artifact (npm package + Docker image) that bundles these binaries.
+When a binary is already present on your PATH (not distributed by us), no
+redistribution obligation applies.

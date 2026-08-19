@@ -5,7 +5,7 @@
 // platform never disagree on what "fail-on: high" means.
 
 // Severity ordering — higher rank = more severe. Mirrors the FindingSeverity
-// enum + the SEVERITY_RANK used in the Shadow Span platform AppSec routes (CRITICAL first).
+// enum + the SEVERITY_RANK used in apps/web AppSec routes (CRITICAL first).
 export const SEVERITY_ORDER = Object.freeze(['UNKNOWN', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL']);
 
 const RANK = Object.freeze(

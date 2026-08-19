@@ -59,6 +59,34 @@ async function git(repoPath, args) {
   }
 }
 
+
+/**
+ * Files changed on this branch relative to `baseRef` — the set a PR gate should judge.
+ *
+ * THREE-DOT (`base...HEAD`) on purpose: it diffs against the MERGE BASE, so the answer is "what
+ * this branch changed", not "how this branch differs from the tip of main right now". With two
+ * dots, every commit landing on main while a PR is open would start counting as that PR's work
+ * and could fail its gate for someone else's finding.
+ *
+ * Returns null — not an empty Set — when the base cannot be resolved (shallow clone, unknown ref,
+ * no git). Null means "unknown", and the caller must fall back to gating on everything; an empty
+ * Set would mean "this PR changed nothing" and would silently pass a gate that never ran.
+ *
+ * @param {string} repoPath
+ * @param {string} baseRef  e.g. 'origin/main' or a SHA
+ * @returns {Promise<Set<string>|null>} repo-relative paths
+ */
+export async function changedFiles(repoPath, baseRef) {
+  if (!baseRef) return null;
+  // Verify the ref resolves before diffing, so a bad ref is "unknown" rather than an empty diff.
+  const resolved = await git(repoPath, ['rev-parse', '--verify', `${baseRef}^{commit}`]);
+  if (!resolved) return null;
+  const out = await git(repoPath, ['diff', '--name-only', `${baseRef}...HEAD`]);
+  if (out === null || out === undefined) return null;
+  const files = out.split('\n').map((l) => l.trim()).filter(Boolean);
+  return new Set(files);
+}
+
 /**
  * Collect repo + commit context for a checkout. CI env vars override local git
  * (GitHub Actions sets GITHUB_REPOSITORY / GITHUB_SHA / GITHUB_REF).

@@ -1,6 +1,6 @@
 // OWASP ZAP DAST engine (active + passive). Shells out to `zap.sh` (the ZAP
 // install) on PATH or at ZAP_PATH — present only in the ZAP Docker images
-// (the Shadow Span DAST images), NOT
+// (services/appsec/Dockerfile.zap{,-browser} + the appsec-zap-scan Action), NOT
 // in the repo-scan image or the CLI host. Gracefully returns [] if ZAP is
 // absent, mirroring scanDast (nuclei).
 //
@@ -38,11 +38,72 @@ export async function isZapAvailable() {
 }
 
 /**
+ * Build the ZAP automation-framework plan (YAML) for a scan. Pure + exported so
+ * the discovery-strategy branches are unit-testable without a live ZAP.
+ *   - opts.apiSpec { format: openapi|graphql|soap, url } → import the spec (no crawl)
+ *   - opts.browser → AJAX spider (Chrome, SPA) instead of the traditional spider
+ *   - opts.active=false → passive baseline only (no activeScan)
+ * @param {string} safeUrl  already-validated http(s) URL
+ */
+export function buildZapPlan(safeUrl, opts = {}, { reportDir = '.', reportName = 'zap' } = {}) {
+  const browser = Boolean(opts.browser);
+  const active = opts.active !== false;
+  const maxSpiderMins = clampInt(opts.maxSpiderMins, 1, 30, 3);
+  const maxScanMins = clampInt(opts.maxScanMins, 1, 60, 10);
+  const apiSpec = opts.apiSpec && opts.apiSpec.url ? opts.apiSpec : null;
+
+  // Discovery: spec import (API) OR crawl (WEB_APP). AJAX spider needs Chrome —
+  // only valid on the browser image; the trigger routes spaMode there.
+  let discoveryJob;
+  if (apiSpec) {
+    let su;
+    try { su = new URL(apiSpec.url); } catch { throw new Error(`buildZapPlan: invalid apiSpec.url: ${apiSpec.url}`); }
+    if (su.protocol !== 'http:' && su.protocol !== 'https:') throw new Error('buildZapPlan: apiSpec.url must be http:// or https://');
+    const safeSpec = su.href;
+    const fmt = String(apiSpec.format || 'openapi').toLowerCase();
+    if (fmt === 'graphql') {
+      discoveryJob = `  - type: graphql
+    parameters: { endpoint: "${safeUrl}", schemaUrl: "${safeSpec}" }`;
+    } else if (fmt === 'soap') {
+      discoveryJob = `  - type: soap
+    parameters: { wsdlUrl: "${safeSpec}" }`;
+    } else {
+      discoveryJob = `  - type: openapi
+    parameters: { apiUrl: "${safeSpec}", targetUrl: "${safeUrl}", context: ctx }`;
+    }
+  } else {
+    discoveryJob = browser
+      ? `  - type: spiderAjax
+    parameters: { context: ctx, url: "${safeUrl}", maxDuration: ${maxSpiderMins}, browserId: chrome-headless, numberOfBrowsers: 2 }`
+      : `  - type: spider
+    parameters: { context: ctx, url: "${safeUrl}", maxDuration: ${maxSpiderMins} }`;
+  }
+  const activeJob = active
+    ? `  - type: activeScan
+    parameters: { context: ctx, maxScanDurationInMins: ${maxScanMins}, policy: "Default Policy" }`
+    : '';
+
+  return `env:
+  contexts:
+    - name: ctx
+      urls: [ "${safeUrl}" ]
+  parameters: { failOnError: false, failOnWarning: false, progressToStdout: true }
+jobs:
+${discoveryJob}
+  - type: passiveScan-wait
+    parameters: { maxDuration: 5 }
+${activeJob ? activeJob + '\n' : ''}  - type: report
+    parameters: { template: traditional-json, reportDir: "${reportDir}", reportFile: "${reportName}" }
+`;
+}
+
+/**
  * Active (or passive) DAST scan of a running app with OWASP ZAP.
  * @param {string} targetUrl  http(s) URL to scan (must be authorized/owned)
  * @param {object} [opts]
- * @param {boolean} [opts.browser=false]  AJAX spider (Chrome) for SPAs
+ * @param {boolean} [opts.browser=false]  AJAX spider (Chrome) for SPAs — needs the browser image
  * @param {boolean} [opts.active=true]    run the active scanner (injection). false = passive baseline only
+ * @param {object}  [opts.apiSpec]        API target: { format: 'openapi'|'graphql'|'soap', url } — import the spec instead of crawling
  * @param {number}  [opts.maxSpiderMins=3]
  * @param {number}  [opts.maxScanMins=10]
  * @returns {Promise<Array>} normalized type=DAST findings
@@ -61,38 +122,12 @@ export async function scanZap(targetUrl, opts = {}) {
   }
   const safeUrl = u.href;
 
-  const browser = Boolean(opts.browser);
-  const active = opts.active !== false;
-  const maxSpiderMins = clampInt(opts.maxSpiderMins, 1, 30, 3);
-  const maxScanMins = clampInt(opts.maxScanMins, 1, 60, 10);
-
   const workDir = await mkdtemp(path.join(tmpdir(), 'appsec-zap-'));
   const planPath = path.join(workDir, 'plan.yaml');
   const reportName = 'zap';
   const reportPath = path.join(workDir, `${reportName}.json`);
 
-  const spiderJob = browser
-    ? `  - type: spiderAjax
-    parameters: { context: ctx, url: "${safeUrl}", maxDuration: ${maxSpiderMins}, browserId: chrome-headless, numberOfBrowsers: 2 }`
-    : `  - type: spider
-    parameters: { context: ctx, url: "${safeUrl}", maxDuration: ${maxSpiderMins} }`;
-  const activeJob = active
-    ? `  - type: activeScan
-    parameters: { context: ctx, maxScanDurationInMins: ${maxScanMins}, policy: "Default Policy" }`
-    : '';
-
-  const plan = `env:
-  contexts:
-    - name: ctx
-      urls: [ "${safeUrl}" ]
-  parameters: { failOnError: false, failOnWarning: false, progressToStdout: true }
-jobs:
-${spiderJob}
-  - type: passiveScan-wait
-    parameters: { maxDuration: 5 }
-${activeJob ? activeJob + '\n' : ''}  - type: report
-    parameters: { template: traditional-json, reportDir: "${workDir}", reportFile: "${reportName}" }
-`;
+  const plan = buildZapPlan(safeUrl, opts, { reportDir: workDir, reportName });
 
   try {
     await writeFile(planPath, plan, 'utf8');

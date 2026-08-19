@@ -195,3 +195,164 @@ rule:
     - pattern: fs.writeFileSync($A + $B)
     - pattern: fs.unlink($A + $B)
     - pattern: fs.unlinkSync($A + $B)
+
+---
+id: js-vm-run
+language: javascript
+severity: error
+message: vm.runInContext/runInNewContext/runInThisContext executes a string as code — a code-execution sink with any non-constant input (CWE-94).
+rule:
+  any:
+    - pattern: vm.runInThisContext($$$ARGS)
+    - pattern: vm.runInNewContext($$$ARGS)
+    - pattern: vm.runInContext($$$ARGS)
+---
+id: js-weak-cipher-algo
+language: javascript
+severity: warning
+message: Weak/broken cipher algorithm (DES/RC4/ECB) selected for createCipheriv — use AES-GCM or another authenticated cipher (CWE-327).
+rule:
+  pattern: crypto.createCipheriv($ALGO, $$$REST)
+constraints:
+  ALGO:
+    regex: '(?i)(des|rc4|ecb|rc2)'
+---
+id: js-weak-cipher-createcipher
+language: javascript
+severity: warning
+message: crypto.createCipher is deprecated and derives keys insecurely (MD5, no IV) — use createCipheriv with a random IV (CWE-327).
+rule:
+  pattern: crypto.createCipher($$$ARGS)
+---
+id: js-pseudo-random-bytes
+language: javascript
+severity: warning
+message: crypto.pseudoRandomBytes is not cryptographically secure — use crypto.randomBytes for tokens, keys, or IVs (CWE-338).
+rule:
+  pattern: crypto.pseudoRandomBytes($$$ARGS)
+---
+id: js-cors-wildcard
+language: javascript
+severity: warning
+message: CORS configured with a wildcard or reflected origin (origin "*" or true) allows any site to read authenticated responses (CWE-942).
+rule:
+  any:
+    - pattern:
+        context: 'cors({ origin: "*" })'
+        selector: pair
+    - pattern:
+        context: "cors({ origin: true })"
+        selector: pair
+---
+id: js-cookie-insecure-flag
+language: javascript
+severity: warning
+message: Cookie set with secure:false or httpOnly:false weakens session protection (transport exposure / JS theft) (CWE-614).
+rule:
+  any:
+    - pattern:
+        context: "x({ secure: false })"
+        selector: pair
+    - pattern:
+        context: "x({ httpOnly: false })"
+        selector: pair
+---
+id: js-postmessage-star
+language: javascript
+severity: warning
+message: postMessage with targetOrigin "*" broadcasts the message to any origin — pin an explicit origin (CWE-345).
+rule:
+  pattern: $W.postMessage($MSG, "*")
+---
+id: js-tls-env-reject
+language: javascript
+severity: error
+message: Setting NODE_TLS_REJECT_UNAUTHORIZED=0 disables TLS verification process-wide, enabling MITM (CWE-295).
+rule:
+  any:
+    - pattern: process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"
+    - pattern: process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
+---
+id: js-jwt-alg-none
+language: javascript
+severity: error
+message: JWT configured with the "none" algorithm disables signature verification — anyone can forge tokens (CWE-347).
+rule:
+  any:
+    - pattern:
+        context: 'jwt.sign(p, k, { algorithm: "none" })'
+        selector: pair
+    - pattern:
+        context: 'jwt.verify(t, k, { algorithms: ["none"] })'
+        selector: pair
+---
+id: js-require-non-literal
+language: javascript
+severity: info
+message: require() with a non-literal argument can load attacker-controlled modules — pass a constant module path (CWE-95).
+rule:
+  pattern: require($MOD)
+constraints:
+  MOD: { not: { kind: string } }
+---
+id: js-electron-node-integration
+language: javascript
+severity: error
+message: Electron BrowserWindow with nodeIntegration:true or contextIsolation:false exposes Node APIs to renderer content — remote pages can run native code (CWE-1188).
+rule:
+  any:
+    - pattern:
+        context: "new BrowserWindow({ webPreferences: { nodeIntegration: true } })"
+        selector: pair
+    - pattern:
+        context: "new BrowserWindow({ webPreferences: { contextIsolation: false } })"
+        selector: pair
+---
+id: js-express-open-redirect
+language: javascript
+severity: warning
+message: res.redirect with a request-derived value enables open redirect / phishing — validate the target against an allowlist (CWE-601).
+rule:
+  pattern: res.redirect($X)
+  has:
+    any:
+      - pattern: req.query
+      - pattern: req.params
+      - pattern: req.body
+    stopBy: end
+---
+id: js-hardcoded-jwt-secret
+language: javascript
+severity: warning
+message: JWT signing secret is a hardcoded string literal — extract it to a secret store / env var (CWE-798).
+rule:
+  pattern: jwt.sign($PAYLOAD, $SECRET)
+constraints:
+  SECRET: { kind: string }
+---
+id: js-sequelize-raw-query
+language: javascript
+severity: warning
+message: ORM raw query (sequelize.query/knex.raw) with a non-literal SQL string may interpolate untrusted input — use bind parameters (CWE-89).
+rule:
+  any:
+    - pattern: $DB.query($Q)
+    - pattern: $DB.raw($Q)
+constraints:
+  Q:
+    not:
+      any:
+        - kind: string
+        - kind: template_string
+---
+id: js-location-javascript-url
+language: javascript
+severity: warning
+message: Assigning a javascript URL scheme to location/href executes script — a DOM XSS sink (CWE-79).
+rule:
+  any:
+    - pattern: $L.href = $URL
+    - pattern: location.href = $URL
+constraints:
+  URL:
+    regex: "javascript:"

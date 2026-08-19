@@ -1,5 +1,5 @@
 // DAST engine — Nuclei (MIT, ProjectDiscovery). Phase 1 of the DAST plan
-//. Template-driven detection of a RUNNING web app:
+// (plans/PLAN-appsec-dast.md). Template-driven detection of a RUNNING web app:
 // CVEs, exposures, misconfigurations, default logins, tech fingerprints.
 //
 // Phase 1 is SAFE DETECTION ONLY — attack/fuzz tags are excluded (`-etags`),

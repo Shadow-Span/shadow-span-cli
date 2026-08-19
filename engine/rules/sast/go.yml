@@ -127,3 +127,170 @@ rule:
     - pattern:
         context: "func f() { ioutil.ReadFile($A + $B) }"
         selector: call_expression
+
+---
+id: go-ssh-insecure-hostkey
+language: go
+severity: error
+message: ssh.InsecureIgnoreHostKey disables SSH host-key verification, enabling MITM (CWE-295).
+rule:
+  pattern: ssh.InsecureIgnoreHostKey()
+---
+id: go-rsa-key-too-short
+language: go
+severity: error
+message: RSA key shorter than 2048 bits is weak — generate at least 2048-bit keys (CWE-326).
+rule:
+  any:
+    - pattern: rsa.GenerateKey($R, 1024)
+    - pattern: rsa.GenerateKey($R, 512)
+    - pattern: rsa.GenerateKey($R, 768)
+---
+id: go-weak-crypto-import
+language: go
+severity: warning
+message: Import of a broken/weak hashing or cipher package (md5/sha1/des/rc4/md4/ripemd160) — avoid in security contexts (CWE-327).
+rule:
+  any:
+    - pattern:
+        context: 'import "crypto/md5"'
+        selector: import_spec
+    - pattern:
+        context: 'import "crypto/sha1"'
+        selector: import_spec
+    - pattern:
+        context: 'import "crypto/des"'
+        selector: import_spec
+    - pattern:
+        context: 'import "crypto/rc4"'
+        selector: import_spec
+    - pattern:
+        context: 'import "golang.org/x/crypto/md4"'
+        selector: import_spec
+    - pattern:
+        context: 'import "golang.org/x/crypto/ripemd160"'
+        selector: import_spec
+---
+id: go-sql-query-concat
+language: go
+severity: error
+message: SQL built with string concatenation interpolates values into the query — use parameterized queries with placeholders (CWE-89).
+rule:
+  any:
+    - pattern:
+        context: "func f() { $DB.Query($A + $B) }"
+        selector: call_expression
+    - pattern:
+        context: "func f() { $DB.QueryRow($A + $B) }"
+        selector: call_expression
+    - pattern:
+        context: "func f() { $DB.QueryContext($CTX, $A + $B) }"
+        selector: call_expression
+    - pattern:
+        context: "func f() { $DB.Exec($A + $B) }"
+        selector: call_expression
+---
+id: go-subprocess-context-shell
+language: go
+severity: error
+message: exec.CommandContext invoking a shell with "-c" / syscall.Exec of a shell is a command-injection sink — pass argv directly instead (CWE-78).
+rule:
+  any:
+    - pattern: exec.CommandContext($CTX, $SH, "-c", $CMD)
+    - pattern: syscall.Exec($SH, $ARGS, $ENV)
+---
+id: go-template-html-unescaped
+language: go
+severity: warning
+message: template.HTML/JS/URL cast of a non-literal value bypasses contextual auto-escaping (XSS) — only cast trusted constants (CWE-79).
+rule:
+  any:
+    - pattern:
+        context: "var _ = template.HTML($X)"
+        selector: call_expression
+    - pattern:
+        context: "var _ = template.JS($X)"
+        selector: call_expression
+    - pattern:
+        context: "var _ = template.URL($X)"
+        selector: call_expression
+constraints:
+  X:
+    not:
+      kind: interpreted_string_literal
+---
+id: go-mkdir-world-perms
+language: go
+severity: warning
+message: Directory created with world-writable 0777 permissions — restrict to least privilege (e.g. 0750) (CWE-276).
+rule:
+  any:
+    - pattern: os.Mkdir($X, 0777)
+    - pattern: os.MkdirAll($X, 0777)
+    - pattern: os.Mkdir($X, 0o777)
+    - pattern: os.MkdirAll($X, 0o777)
+---
+id: go-chmod-world-perms
+language: go
+severity: warning
+message: chmod to world-writable 0777 grants overly broad file permissions — restrict to least privilege (CWE-276).
+rule:
+  any:
+    - pattern: os.Chmod($X, 0777)
+    - pattern: os.Chmod($X, 0o777)
+---
+id: go-writefile-world-perms
+language: go
+severity: warning
+message: os.WriteFile with world-readable/writable 0666 or 0777 permissions exposes file contents — restrict to 0600/0640 (CWE-276).
+rule:
+  any:
+    - pattern: os.WriteFile($P, $D, 0777)
+    - pattern: os.WriteFile($P, $D, 0666)
+    - pattern: os.WriteFile($P, $D, 0o777)
+    - pattern: os.WriteFile($P, $D, 0o666)
+---
+id: go-jwt-none-algorithm
+language: go
+severity: error
+message: JWT "none" signing method accepts unsigned tokens — never use SigningMethodNone / UnsafeAllowNoneSignatureType for verification (CWE-347).
+rule:
+  any:
+    - pattern:
+        context: "var _ = jwt.SigningMethodNone"
+        selector: selector_expression
+    - pattern:
+        context: "var _ = jwt.UnsafeAllowNoneSignatureType"
+        selector: selector_expression
+---
+id: go-bind-all-interfaces
+language: go
+severity: info
+message: Listening on 0.0.0.0 binds the service to all network interfaces — bind to a specific address unless public exposure is intended (CWE-668).
+rule:
+  any:
+    - pattern:
+        context: 'func f() { net.Listen($P, "0.0.0.0:" + $X) }'
+        selector: call_expression
+---
+id: go-pprof-import
+language: go
+severity: warning
+message: Blank import of net/http/pprof registers debug profiling handlers on the default mux, potentially exposing them publicly (CWE-200).
+rule:
+  pattern:
+    context: 'import _ "net/http/pprof"'
+    selector: import_spec
+---
+id: go-tls-min-version-low
+language: go
+severity: warning
+message: tls.Config MinVersion below TLS 1.2 permits deprecated, insecure protocol versions — set MinVersion to tls.VersionTLS12 or higher (CWE-326).
+rule:
+  any:
+    - pattern:
+        context: "_ = tls.Config{MinVersion: tls.VersionTLS10}"
+        selector: keyed_element
+    - pattern:
+        context: "_ = tls.Config{MinVersion: tls.VersionTLS11}"
+        selector: keyed_element

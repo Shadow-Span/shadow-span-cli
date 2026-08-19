@@ -1,0 +1,1019 @@
+{
+  "SS-AWS-RDS-001": {
+    "owned": true,
+    "title": "RDS instance is publicly accessible",
+    "category": "public-exposure",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.1",
+        "CC6.7"
+      ],
+      "pci": [
+        "1.3",
+        "2.2"
+      ],
+      "nist": [
+        "SC-7"
+      ],
+      "iso": [
+        "A.8.20"
+      ],
+      "gdpr": [
+        "Art.32",
+        "Art.25"
+      ]
+    }
+  },
+  "AWS-0180": {
+    "owned": false,
+    "title": "RDS Publicly Accessible",
+    "category": "public-exposure",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.1",
+        "CC6.7"
+      ],
+      "pci": [
+        "1.3",
+        "2.2"
+      ],
+      "nist": [
+        "SC-7"
+      ],
+      "iso": [
+        "A.8.20"
+      ],
+      "gdpr": [
+        "Art.32",
+        "Art.25"
+      ]
+    }
+  },
+  "GCP-0017": {
+    "owned": false,
+    "title": "Cloud SQL Database Instances are publicly exposed",
+    "category": "public-exposure",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.1",
+        "CC6.7"
+      ],
+      "pci": [
+        "1.3",
+        "2.2"
+      ],
+      "nist": [
+        "SC-7"
+      ],
+      "iso": [
+        "A.8.20"
+      ],
+      "gdpr": [
+        "Art.32",
+        "Art.25"
+      ]
+    }
+  },
+  "GCP-0001": {
+    "owned": false,
+    "title": "Cloud Storage bucket is anonymously/publicly accessible",
+    "category": "public-exposure",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.1"
+      ],
+      "pci": [
+        "1.3",
+        "7.1"
+      ],
+      "nist": [
+        "AC-3",
+        "SC-7"
+      ],
+      "iso": [
+        "A.8.3"
+      ],
+      "gdpr": [
+        "Art.32",
+        "Art.25"
+      ]
+    }
+  },
+  "AWS-0086": {
+    "owned": false,
+    "title": "S3 Access block should block public ACL",
+    "category": "public-exposure",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.1"
+      ],
+      "pci": [
+        "1.3",
+        "7.1"
+      ],
+      "nist": [
+        "AC-3",
+        "SC-7"
+      ],
+      "iso": [
+        "A.8.3"
+      ],
+      "gdpr": [
+        "Art.32",
+        "Art.25"
+      ]
+    }
+  },
+  "AWS-0087": {
+    "owned": false,
+    "title": "S3 Access block should block public policy",
+    "category": "public-exposure",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.1"
+      ],
+      "pci": [
+        "1.3",
+        "7.1"
+      ],
+      "nist": [
+        "AC-3",
+        "SC-7"
+      ],
+      "iso": [
+        "A.8.3"
+      ],
+      "gdpr": [
+        "Art.32",
+        "Art.25"
+      ]
+    }
+  },
+  "AWS-0091": {
+    "owned": false,
+    "title": "S3 Access Block should Ignore Public ACL",
+    "category": "public-exposure",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.1"
+      ],
+      "pci": [
+        "1.3",
+        "7.1"
+      ],
+      "nist": [
+        "AC-3",
+        "SC-7"
+      ],
+      "iso": [
+        "A.8.3"
+      ],
+      "gdpr": [
+        "Art.32",
+        "Art.25"
+      ]
+    }
+  },
+  "AWS-0093": {
+    "owned": false,
+    "title": "S3 Access block should restrict public bucket",
+    "category": "public-exposure",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.1"
+      ],
+      "pci": [
+        "1.3",
+        "7.1"
+      ],
+      "nist": [
+        "AC-3",
+        "SC-7"
+      ],
+      "iso": [
+        "A.8.3"
+      ],
+      "gdpr": [
+        "Art.32",
+        "Art.25"
+      ]
+    }
+  },
+  "GCP-0046": {
+    "owned": false,
+    "title": "BigQuery datasets accessible outside the organisation",
+    "category": "public-exposure",
+    "severity": "CRITICAL",
+    "frameworks": {
+      "soc2": [
+        "CC6.1"
+      ],
+      "pci": [
+        "1.3",
+        "7.1"
+      ],
+      "nist": [
+        "AC-3",
+        "SC-7"
+      ],
+      "iso": [
+        "A.8.3"
+      ],
+      "gdpr": [
+        "Art.32",
+        "Art.25"
+      ]
+    }
+  },
+  "AWS-0040": {
+    "owned": false,
+    "title": "EKS cluster public access enabled",
+    "category": "public-exposure",
+    "severity": "CRITICAL",
+    "frameworks": {
+      "soc2": [
+        "CC6.1",
+        "CC6.6"
+      ],
+      "pci": [
+        "1.3"
+      ],
+      "nist": [
+        "SC-7",
+        "AC-4"
+      ],
+      "iso": [
+        "A.8.20"
+      ],
+      "gdpr": [
+        "Art.32"
+      ]
+    }
+  },
+  "GCP-0053": {
+    "owned": false,
+    "title": "GKE Control Plane is publicly accessible",
+    "category": "public-exposure",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.1",
+        "CC6.6"
+      ],
+      "pci": [
+        "1.3"
+      ],
+      "nist": [
+        "SC-7",
+        "AC-4"
+      ],
+      "iso": [
+        "A.8.20"
+      ],
+      "gdpr": [
+        "Art.32"
+      ]
+    }
+  },
+  "AZU-0041": {
+    "owned": false,
+    "title": "AKS API server has no authorized IP ranges",
+    "category": "public-exposure",
+    "severity": "CRITICAL",
+    "frameworks": {
+      "soc2": [
+        "CC6.1",
+        "CC6.6"
+      ],
+      "pci": [
+        "1.3"
+      ],
+      "nist": [
+        "SC-7",
+        "AC-4"
+      ],
+      "iso": [
+        "A.8.20"
+      ],
+      "gdpr": [
+        "Art.32"
+      ]
+    }
+  },
+  "AWS-0053": {
+    "owned": false,
+    "title": "Load balancer is exposed to the internet",
+    "category": "public-exposure",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.1"
+      ],
+      "pci": [
+        "1.3"
+      ],
+      "nist": [
+        "SC-7"
+      ],
+      "iso": [
+        "A.8.20"
+      ],
+      "gdpr": [
+        "Art.25"
+      ]
+    }
+  },
+  "AWS-0164": {
+    "owned": false,
+    "title": "Subnet assigns public IP by default",
+    "category": "public-exposure",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.1"
+      ],
+      "pci": [
+        "1.3"
+      ],
+      "nist": [
+        "SC-7"
+      ],
+      "iso": [
+        "A.8.20"
+      ],
+      "gdpr": [
+        "Art.25"
+      ]
+    }
+  },
+  "GCP-0031": {
+    "owned": false,
+    "title": "Compute instances have public IP addresses",
+    "category": "public-exposure",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.1"
+      ],
+      "pci": [
+        "1.3"
+      ],
+      "nist": [
+        "SC-7"
+      ],
+      "iso": [
+        "A.8.20"
+      ],
+      "gdpr": [
+        "Art.25"
+      ]
+    }
+  },
+  "AWS-0107": {
+    "owned": false,
+    "title": "Security group allows unrestricted SSH/RDP ingress",
+    "category": "unrestricted-ingress",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.1",
+        "CC6.6"
+      ],
+      "pci": [
+        "1.3",
+        "2.2"
+      ],
+      "nist": [
+        "SC-7",
+        "AC-4"
+      ],
+      "iso": [
+        "A.8.20"
+      ],
+      "gdpr": [
+        "Art.32",
+        "Art.25"
+      ]
+    }
+  },
+  "AZU-0050": {
+    "owned": false,
+    "title": "NSG allows unrestricted SSH ingress",
+    "category": "unrestricted-ingress",
+    "severity": "CRITICAL",
+    "frameworks": {
+      "soc2": [
+        "CC6.1",
+        "CC6.6"
+      ],
+      "pci": [
+        "1.3",
+        "2.2"
+      ],
+      "nist": [
+        "SC-7",
+        "AC-4"
+      ],
+      "iso": [
+        "A.8.20"
+      ],
+      "gdpr": [
+        "Art.32",
+        "Art.25"
+      ]
+    }
+  },
+  "AZU-0048": {
+    "owned": false,
+    "title": "NSG allows unrestricted RDP ingress",
+    "category": "unrestricted-ingress",
+    "severity": "CRITICAL",
+    "frameworks": {
+      "soc2": [
+        "CC6.1",
+        "CC6.6"
+      ],
+      "pci": [
+        "1.3",
+        "2.2"
+      ],
+      "nist": [
+        "SC-7",
+        "AC-4"
+      ],
+      "iso": [
+        "A.8.20"
+      ],
+      "gdpr": [
+        "Art.32",
+        "Art.25"
+      ]
+    }
+  },
+  "AZU-0047": {
+    "owned": false,
+    "title": "NSG allows unrestricted ingress from any IP",
+    "category": "unrestricted-ingress",
+    "severity": "CRITICAL",
+    "frameworks": {
+      "soc2": [
+        "CC6.1",
+        "CC6.6"
+      ],
+      "pci": [
+        "1.3",
+        "2.2"
+      ],
+      "nist": [
+        "SC-7",
+        "AC-4"
+      ],
+      "iso": [
+        "A.8.20"
+      ],
+      "gdpr": [
+        "Art.32",
+        "Art.25"
+      ]
+    }
+  },
+  "GCP-0027": {
+    "owned": false,
+    "title": "Firewall rule allows unrestricted ingress from any IP",
+    "category": "unrestricted-ingress",
+    "severity": "CRITICAL",
+    "frameworks": {
+      "soc2": [
+        "CC6.1",
+        "CC6.6"
+      ],
+      "pci": [
+        "1.3",
+        "2.2"
+      ],
+      "nist": [
+        "SC-7",
+        "AC-4"
+      ],
+      "iso": [
+        "A.8.20"
+      ],
+      "gdpr": [
+        "Art.32",
+        "Art.25"
+      ]
+    }
+  },
+  "GCP-0070": {
+    "owned": false,
+    "title": "RDP access is not restricted",
+    "category": "unrestricted-ingress",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.1",
+        "CC6.6"
+      ],
+      "pci": [
+        "1.3",
+        "2.2"
+      ],
+      "nist": [
+        "SC-7",
+        "AC-4"
+      ],
+      "iso": [
+        "A.8.20"
+      ],
+      "gdpr": [
+        "Art.32",
+        "Art.25"
+      ]
+    }
+  },
+  "AWS-0104": {
+    "owned": false,
+    "title": "Security group allows unrestricted egress",
+    "category": "unrestricted-ingress",
+    "severity": "CRITICAL",
+    "frameworks": {
+      "soc2": [
+        "CC6.1",
+        "CC6.6"
+      ],
+      "pci": [
+        "1.3"
+      ],
+      "nist": [
+        "SC-7",
+        "AC-4"
+      ],
+      "iso": [
+        "A.8.20"
+      ],
+      "gdpr": [
+        "Art.32"
+      ]
+    }
+  },
+  "AWS-0026": {
+    "owned": false,
+    "title": "EBS volumes must be encrypted",
+    "category": "encryption-at-rest",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.1"
+      ],
+      "pci": [
+        "3.4"
+      ],
+      "nist": [
+        "SC-28"
+      ],
+      "iso": [
+        "A.8.24"
+      ],
+      "gdpr": [
+        "Art.32"
+      ]
+    }
+  },
+  "AWS-0131": {
+    "owned": false,
+    "title": "Instance block device is unencrypted",
+    "category": "encryption-at-rest",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.1"
+      ],
+      "pci": [
+        "3.4"
+      ],
+      "nist": [
+        "SC-28"
+      ],
+      "iso": [
+        "A.8.24"
+      ],
+      "gdpr": [
+        "Art.32"
+      ]
+    }
+  },
+  "AWS-0080": {
+    "owned": false,
+    "title": "RDS instance encryption not enabled",
+    "category": "encryption-at-rest",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.1"
+      ],
+      "pci": [
+        "3.4"
+      ],
+      "nist": [
+        "SC-28"
+      ],
+      "iso": [
+        "A.8.24"
+      ],
+      "gdpr": [
+        "Art.32"
+      ]
+    }
+  },
+  "AWS-0079": {
+    "owned": false,
+    "title": "RDS cluster encryption not enabled",
+    "category": "encryption-at-rest",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.1"
+      ],
+      "pci": [
+        "3.4"
+      ],
+      "nist": [
+        "SC-28"
+      ],
+      "iso": [
+        "A.8.24"
+      ],
+      "gdpr": [
+        "Art.32"
+      ]
+    }
+  },
+  "AWS-0048": {
+    "owned": false,
+    "title": "Elasticsearch domain not encrypted at rest",
+    "category": "encryption-at-rest",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.1"
+      ],
+      "pci": [
+        "3.4"
+      ],
+      "nist": [
+        "SC-28"
+      ],
+      "iso": [
+        "A.8.24"
+      ],
+      "gdpr": [
+        "Art.32"
+      ]
+    }
+  },
+  "AWS-0076": {
+    "owned": false,
+    "title": "Neptune storage not encrypted at rest",
+    "category": "encryption-at-rest",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.1"
+      ],
+      "pci": [
+        "3.4"
+      ],
+      "nist": [
+        "SC-28"
+      ],
+      "iso": [
+        "A.8.24"
+      ],
+      "gdpr": [
+        "Art.32"
+      ]
+    }
+  },
+  "AWS-0039": {
+    "owned": false,
+    "title": "EKS secrets encryption disabled",
+    "category": "encryption-at-rest",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.1"
+      ],
+      "pci": [
+        "3.4"
+      ],
+      "nist": [
+        "SC-28"
+      ],
+      "iso": [
+        "A.8.24"
+      ],
+      "gdpr": [
+        "Art.32"
+      ]
+    }
+  },
+  "AZU-0038": {
+    "owned": false,
+    "title": "Managed disk encryption not enabled",
+    "category": "encryption-at-rest",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.1"
+      ],
+      "pci": [
+        "3.4"
+      ],
+      "nist": [
+        "SC-28"
+      ],
+      "iso": [
+        "A.8.24"
+      ],
+      "gdpr": [
+        "Art.32"
+      ]
+    }
+  },
+  "AWS-0046": {
+    "owned": false,
+    "title": "Elasticsearch does not enforce HTTPS",
+    "category": "in-transit",
+    "severity": "CRITICAL",
+    "frameworks": {
+      "soc2": [
+        "CC6.7"
+      ],
+      "pci": [
+        "4.1",
+        "4.2"
+      ],
+      "nist": [
+        "SC-8"
+      ],
+      "iso": [
+        "A.8.24"
+      ],
+      "gdpr": [
+        "Art.32"
+      ]
+    }
+  },
+  "AWS-0043": {
+    "owned": false,
+    "title": "Elasticsearch node-to-node uses plaintext",
+    "category": "in-transit",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.7"
+      ],
+      "pci": [
+        "4.1",
+        "4.2"
+      ],
+      "nist": [
+        "SC-8"
+      ],
+      "iso": [
+        "A.8.24"
+      ],
+      "gdpr": [
+        "Art.32"
+      ]
+    }
+  },
+  "AWS-0126": {
+    "owned": false,
+    "title": "Elasticsearch endpoint uses outdated TLS policy",
+    "category": "in-transit",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.7"
+      ],
+      "pci": [
+        "4.1",
+        "4.2"
+      ],
+      "nist": [
+        "SC-8"
+      ],
+      "iso": [
+        "A.8.24"
+      ],
+      "gdpr": [
+        "Art.32"
+      ]
+    }
+  },
+  "GCP-0015": {
+    "owned": false,
+    "title": "SSL not enforced on Cloud SQL instance",
+    "category": "in-transit",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.7"
+      ],
+      "pci": [
+        "4.1",
+        "4.2"
+      ],
+      "nist": [
+        "SC-8"
+      ],
+      "iso": [
+        "A.8.24"
+      ],
+      "gdpr": [
+        "Art.32"
+      ]
+    }
+  },
+  "AWS-0345": {
+    "owned": false,
+    "title": "Unrestricted (wildcard) S3 IAM policy",
+    "category": "iam-least-privilege",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.1",
+        "CC6.3"
+      ],
+      "pci": [
+        "7.1",
+        "7.2"
+      ],
+      "nist": [
+        "AC-6"
+      ],
+      "iso": [
+        "A.8.2"
+      ],
+      "gdpr": [
+        "Art.32",
+        "Art.25"
+      ]
+    }
+  },
+  "AWS-0004": {
+    "owned": false,
+    "title": "API Gateway method allows unauthorized access",
+    "category": "public-exposure",
+    "severity": "LOW",
+    "frameworks": {
+      "soc2": [
+        "CC6.1",
+        "CC6.6"
+      ],
+      "pci": [
+        "1.3"
+      ],
+      "nist": [
+        "AC-3",
+        "SC-7"
+      ],
+      "iso": [
+        "A.8.20"
+      ],
+      "gdpr": [
+        "Art.32",
+        "Art.25"
+      ]
+    }
+  },
+  "SS-AWS-IAM-001": {
+    "owned": true,
+    "title": "IAM policy grants full administrative (wildcard) permissions",
+    "category": "iam-least-privilege",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.1",
+        "CC6.3"
+      ],
+      "pci": [
+        "7.1",
+        "7.2"
+      ],
+      "nist": [
+        "AC-6"
+      ],
+      "iso": [
+        "A.8.2"
+      ],
+      "gdpr": [
+        "Art.32",
+        "Art.25"
+      ]
+    }
+  },
+  "AWS-0028": {
+    "owned": false,
+    "title": "EC2 does not enforce IMDSv2 (session tokens)",
+    "category": "host-hardening",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.1"
+      ],
+      "pci": [
+        "2.2"
+      ],
+      "nist": [
+        "AC-6"
+      ],
+      "iso": [
+        "A.8.9"
+      ],
+      "gdpr": [
+        "Art.32"
+      ]
+    }
+  },
+  "GCP-0062": {
+    "owned": false,
+    "title": "Legacy ABAC permissions enabled on GKE",
+    "category": "host-hardening",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.1",
+        "CC6.3"
+      ],
+      "pci": [
+        "7.2"
+      ],
+      "nist": [
+        "AC-6"
+      ],
+      "iso": [
+        "A.8.2"
+      ],
+      "gdpr": [
+        "Art.32"
+      ]
+    }
+  },
+  "GCP-0048": {
+    "owned": false,
+    "title": "Legacy metadata endpoints enabled",
+    "category": "host-hardening",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.1"
+      ],
+      "pci": [
+        "2.2"
+      ],
+      "nist": [
+        "AC-6"
+      ],
+      "iso": [
+        "A.8.9"
+      ],
+      "gdpr": [
+        "Art.32"
+      ]
+    }
+  },
+  "DS-0002": {
+    "owned": false,
+    "title": "Dockerfile image runs as root",
+    "category": "host-hardening",
+    "severity": "HIGH",
+    "frameworks": {
+      "soc2": [
+        "CC6.1"
+      ],
+      "pci": [
+        "2.2"
+      ],
+      "nist": [
+        "AC-6",
+        "CM-7"
+      ],
+      "iso": [
+        "A.8.9"
+      ],
+      "gdpr": [
+        "Art.32"
+      ]
+    }
+  }
+}

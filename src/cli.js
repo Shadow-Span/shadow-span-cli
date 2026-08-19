@@ -18,7 +18,7 @@ import { buildPayload, reportScan, buildDastPayload, reportDastScan } from './re
 import { postPrFeedback, detectProvider } from './reporters/index.js';
 import { toSarif } from './formats/sarif.js';
 import { toCodeQuality } from './formats/gitlab-codequality.js';
-import { collectGitInfo } from './git-info.js';
+import { collectGitInfo, changedFiles } from './git-info.js';
 import { resolveConfig, saveAuth, DEFAULT_API_URL } from './config.js';
 import { loadIgnore, applyIgnore, IGNORE_FILENAME } from './ignore.js';
 
@@ -99,6 +99,7 @@ const OPTIONS = {
   'gitlab-report': { type: 'string' },
   staged: { type: 'boolean' },
   diff: { type: 'boolean' },
+  'diff-base': { type: 'string' },
   report: { type: 'boolean' },
   'no-report': { type: 'boolean' },
   'comment-pr': { type: 'boolean' },
@@ -233,7 +234,7 @@ async function cmdScan(flags, restPositionals, io) {
   // BEFORE gate + report, so ignored paths neither block the build nor reach the
   // platform. (The server ALSO enforces org path exclusions at ingest.)
   const matcher = await loadIgnore(repoPath);
-  let { kept: findings, ignored } = applyIgnore(rawFindings, matcher);
+  let { kept: findings, ignored, byRule: suppressedRules } = applyIgnore(rawFindings, matcher);
   if (ignored > 0 && output !== 'json') {
     io.error(`  ${ignored} finding(s) excluded by ${IGNORE_FILENAME} (${matcher.count} rule(s))`);
   }
@@ -243,7 +244,34 @@ async function cmdScan(flags, restPositionals, io) {
     findings = r.findings;
   }
 
-  const gate = evaluateGate(findings, { failOn, softFail: alertOnly });
+  // ── PR gating ───────────────────────────────────────────────────────────────────────────────
+  // With --diff-base, the GATE judges only findings in files this branch changed, while the report
+  // still carries EVERYTHING. That split is the point: a repo with pre-existing findings otherwise
+  // gets a permanently red gate, and a gate that is always red is one people learn to ignore. What
+  // a PR is accountable for is what it changed.
+  //
+  // Scanning is unchanged — still whole-repo. Scoping the SCAN would be wrong: SCA needs the whole
+  // lockfile and IaC needs surrounding context, so a file-limited scan reports different findings,
+  // not fewer.
+  let gateFindings = findings;
+  if (flags['diff-base']) {
+    const changed = await changedFiles(repoPath, flags['diff-base']);
+    if (changed === null) {
+      // Unknown, not empty. A shallow clone or unresolvable base must NOT silently pass the gate,
+      // so fall back to judging everything and say so.
+      if (output !== 'json') {
+        io.error(`  diff-base '${flags['diff-base']}' could not be resolved — gating on ALL findings`);
+        io.error('  (in CI this usually means a shallow checkout; use fetch-depth: 0)');
+      }
+    } else {
+      gateFindings = findings.filter((f) => f.file && changed.has(f.file));
+      if (output !== 'json') {
+        io.error(`  gate scoped to ${changed.size} changed file(s): ${gateFindings.length} of ${findings.length} finding(s) in scope`);
+      }
+    }
+  }
+
+  const gate = evaluateGate(gateFindings, { failOn, softFail: alertOnly });
 
   io.log(renderResults({ findings, gate, errors, output }));
 
@@ -268,7 +296,15 @@ async function cmdScan(flags, restPositionals, io) {
       // ('client'); otherwise, when running in a CI provider, ask the platform to
       // decorate via the connected App ('platform'); else 'none'. Prevents double-posting.
       const prComment = flags['comment-pr'] ? 'client' : (detectProvider() ? 'platform' : 'none');
-      const payload = buildPayload({ source, repo, commit, scanType, failOn, findings, prComment });
+      // Report what was SUPPRESSED alongside what was found. Without this the repo-local ignore
+    // file is a silent channel: a rule of `**` turns the pipeline green and the platform sees a
+    // clean scan with no sign anything was dropped. The org exclusion list is NOT included here —
+    // the server applies that itself and already knows it; this is specifically the extra
+    // filtering the RUNNER did on top.
+    const payload = buildPayload({
+      source, repo, commit, scanType, failOn, findings, prComment,
+      suppressed: { count: ignored, rules: suppressedRules },
+    });
       const res = await reportScan({ apiUrl, apiKey, payload });
       if (res.ok) io.error(`✓ Reported scan ${res.body?.scanId || ''} to ${apiUrl}`);
       else io.error(`⚠ Report failed (HTTP ${res.status}): ${res.body?.error || 'unknown error'}`);
