@@ -42,6 +42,8 @@ SCAN OPTIONS
   --soft-fail        alias for --mode alert (never exit non-zero on findings)
   --report           POST findings to the Shadow Span platform (needs an API key)
   --no-report        force local-only (default for --staged)
+  --scan-dependencies  also scan node_modules / venv / Pods (excluded by default —
+                     use when hunting a supply-chain implant; expect volume)
   --api-key <key>    WRITE_APPSEC key (or env SHADOWSPAN_API_KEY)
   --api-url <url>    platform base URL (default: ${DEFAULT_API_URL})
   --source <s>       cli | github-action | pre-commit     (default: cli)
@@ -102,6 +104,9 @@ const OPTIONS = {
   'diff-base': { type: 'string' },
   report: { type: 'boolean' },
   'no-report': { type: 'boolean' },
+  // Opt OUT of DEFAULT_EXCLUSIONS. Hunting a supply-chain implant inside node_modules is a real
+  // task, and the noise filter must not be the thing that prevents it.
+  'scan-dependencies': { type: 'boolean' },
   'comment-pr': { type: 'boolean' },
   'soft-fail': { type: 'boolean' },
   force: { type: 'boolean' },
@@ -238,9 +243,16 @@ async function cmdScan(flags, restPositionals, io) {
   if (ignored > 0 && output !== 'json') {
     io.error(`  ${ignored} finding(s) excluded by ${IGNORE_FILENAME} (${matcher.count} rule(s))`);
   }
-  if (orgPathExclusions.length) {
-    const r = applyPathExclusions(findings, orgPathExclusions);
-    if (r.dropped > 0 && output !== 'json') io.error(`  ${r.dropped} finding(s) excluded by org path rules`);
+  // ALWAYS run this, not only when the org configured rules: DEFAULT_EXCLUSIONS (node_modules
+  // and friends) live inside it. Gating the whole call on orgPathExclusions.length was why
+  // 0.1.0 reported findings against `node_modules/@shadow-span/cli/...` on a local scan — the
+  // engines only skip node_modules when the target is a git repo, and this filter, the one
+  // layer that does not care about git, never ran.
+  {
+    const r = applyPathExclusions(findings, orgPathExclusions, {
+      includeDefaults: !flags['scan-dependencies'],
+    });
+    if (r.dropped > 0 && output !== 'json') io.error(`  ${r.dropped} finding(s) excluded by path rules`);
     findings = r.findings;
   }
 

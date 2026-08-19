@@ -26,7 +26,7 @@ export { generateSbom } from './engines/sbom.js';
 export { evaluateLicensePolicy, classifyLicense, DEFAULT_LICENSE_POLICY } from './license-policy.js';
 
 // Scanner ignore rules (settings page): path exclusions
-export { applyPathExclusions, compileExclusions, isPathExcluded, explainExclusions } from './lib/path-exclude.js';
+export { applyPathExclusions, compileExclusions, isPathExcluded, explainExclusions, DEFAULT_EXCLUSIONS } from './lib/path-exclude.js';
 
 // Normalization + finding identity
 export {

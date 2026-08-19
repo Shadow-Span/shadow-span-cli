@@ -58,14 +58,59 @@ export function isPathExcluded(file, compiled) {
 }
 
 /**
+ * Directories that hold FETCHED THIRD-PARTY CODE rather than the author's own. Always excluded,
+ * because a finding in one is not actionable through this channel: the user cannot edit
+ * node_modules: the remedy for a vulnerable dependency is an SCA upgrade driven by the lockfile,
+ * which these globs deliberately do not touch (lockfiles live at the project root, not inside
+ * node_modules).
+ *
+ * WHY IT IS A DEFAULT AND NOT DOCUMENTATION. Until 0.1.1 the engines only skipped node_modules
+ * when the target happened to be a git repo, because the underlying tools consult git's index —
+ * a .gitignore alone did NOT do it. Verified on the published 0.1.0:
+ *     plain directory        → 2 findings from node_modules
+ *     .gitignore node_modules/ → 2   (ignored)
+ *     git init               → 0
+ * So the very first thing a new user does — npm i the CLI, scan a folder — reported findings
+ * against `node_modules/@shadow-span/cli/...`, i.e. the scanner accusing its own source. CI never
+ * caught it because CI is always a git checkout.
+ *
+ * Conservative on purpose: only directories that are UNAMBIGUOUSLY fetched dependencies. `vendor/`
+ * is deliberately absent — it is composer/Go deps in some projects and hand-written code in
+ * others, so it stays a user-configured rule (and is already the documented example).
+ */
+export const DEFAULT_EXCLUSIONS = Object.freeze([
+  '**/node_modules/**',
+  '**/bower_components/**',
+  '**/site-packages/**',
+  '**/.venv/**',
+  '**/venv/**',
+  '**/Pods/**',
+  '**/.git/**',
+]);
+
+/**
  * Drop findings whose file/lockfile path matches any exclusion glob. Findings
  * with no path (e.g. type=LICENSE) are never excluded.
+ *
+ * DEFAULT_EXCLUSIONS are applied in addition to `globs`. Pass
+ * `{ includeDefaults: false }` to scan dependency trees deliberately — hunting a supply-chain
+ * implant in node_modules is a real task, and this filter must not be the thing that prevents it.
+ *
+ * @param {Array} findings
+ * @param {string[]} globs               user/org-configured exclusions
+ * @param {{includeDefaults?: boolean}} [opts]
  * @returns {{ findings: Array, dropped: number }}
  */
-export function applyPathExclusions(findings, globs) {
-  const compiled = compileExclusions(globs);
+export function applyPathExclusions(findings, globs, opts = {}) {
+  const { includeDefaults = true } = opts;
+  const all = includeDefaults ? [...DEFAULT_EXCLUSIONS, ...(globs || [])] : globs;
+  const compiled = compileExclusions(all);
   if (!compiled.length) return { findings, dropped: 0 };
   const kept = findings.filter((f) => !isPathExcluded(f.file || f.evidence?.lockfile, compiled));
+  // Return the ORIGINAL array when nothing matched. Callers relied on that identity before
+  // defaults existed (a no-op scan handed back the same reference), and adding always-on globs
+  // would otherwise allocate a new array on every clean scan for no reason.
+  if (kept.length === findings.length) return { findings, dropped: 0 };
   return { findings: kept, dropped: findings.length - kept.length };
 }
 
