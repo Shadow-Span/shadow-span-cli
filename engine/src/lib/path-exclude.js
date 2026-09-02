@@ -106,7 +106,14 @@ export function applyPathExclusions(findings, globs, opts = {}) {
   const all = includeDefaults ? [...DEFAULT_EXCLUSIONS, ...(globs || [])] : globs;
   const compiled = compileExclusions(all);
   if (!compiled.length) return { findings, dropped: 0 };
-  const kept = findings.filter((f) => !isPathExcluded(f.file || f.evidence?.lockfile, compiled));
+  // MALWARE is never excluded, by any path rule — including DEFAULT_EXCLUSIONS.
+  // The suppression kernel refuses to suppress it (suppression.js) and the CLI
+  // help says so; a path filter that quietly dropped it made that promise false.
+  // It matters most here: a malicious package lives in node_modules, which is
+  // excluded BY DEFAULT. Volume is not a concern — MALWARE findings are keyed to
+  // the lockfile, not to files inside the dependency.
+  const kept = findings.filter((f) => f.type === 'MALWARE'
+    || !isPathExcluded(f.file || f.evidence?.lockfile, compiled));
   // Return the ORIGINAL array when nothing matched. Callers relied on that identity before
   // defaults existed (a no-op scan handed back the same reference), and adding always-on globs
   // would otherwise allocate a new array on every clean scan for no reason.

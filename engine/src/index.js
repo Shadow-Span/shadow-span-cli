@@ -64,7 +64,7 @@ export { upsertAppSecFindings, upsertRepoPackages, closeFindingsForInactiveRepos
 export { evaluateGate, SEVERITY_ORDER, FAIL_ON_LEVELS } from './gate.js';
 
 // Secret redaction (snippet + evidence scrubbing)
-export { redactSecrets, redactDeep } from './redact.js';
+export { redactSecrets, redactSecretsPreservingLines, redactDeep, sanitizeForLog } from './redact.js';
 
 // Suppression rules (read-time FP triage — org/repo scoped, MALWARE-exempt)
 export {
@@ -72,3 +72,11 @@ export {
   isRuleActive, findingMatchesRule, isSuppressed, buildSuppressionWhere,
   pathMatchesGlob, globToRegExp,
 } from './suppression.js';
+
+// Repo-local suppression file — the CLI's equivalent of the platform's rule rows.
+export {
+  SUPPRESSION_FILENAME, parseSuppressionFile, loadSuppressionFile, applySuppressions,
+} from './suppression-file.js';
+
+// Engine preflight — prove each scanner can run before trusting a clean result.
+export { preflight, probeEngine, formatPreflightFailure, environmentInfo, ENGINE_BINARIES } from './preflight.js';

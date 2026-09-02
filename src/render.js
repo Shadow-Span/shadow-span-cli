@@ -24,9 +24,31 @@ const TYPE_LABEL = { SECRET: 'Secret', SCA: 'Dependency', SAST: 'Code', IAC: 'Ia
  * @param {boolean} [args.color] colorize (default: stdout TTY)
  * @returns {string}
  */
-export function renderResults({ findings, gate, errors = [], output = 'rich', color: useColor }) {
+export function renderResults({ findings, gate, scope, errors = [], suppressed = [], output = 'rich', color: useColor }) {
   if (output === 'json') {
-    return JSON.stringify({ summary: { total: findings.length, bySeverity: gate.bySeverity }, gate, errors, findings }, null, 2);
+    // `summary` describes the FULL finding set that `findings` contains; `gate` describes the subset
+    // the gate judged. Previously this object paired summary.total (all) with summary.bySeverity
+    // (gated) — two populations in one record, which no consumer could interpret correctly.
+    return JSON.stringify({
+      summary: { total: findings.length, bySeverity: scope ? scope.totalBySeverity : gate.bySeverity },
+      gate: { ...gate, scoped: Boolean(scope), ...(scope ? { diffBase: scope.diffBase, gatedCount: scope.gatedCount } : {}) },
+      errors,
+      findings,
+      // Accepted risks are part of the record, not an absence. A consumer that
+      // only sees `findings` cannot tell a suppressed finding from one that never
+      // occurred, which makes the suppression file a silent channel in exactly
+      // the way .shadowspanignore reporting exists to prevent.
+      suppressed: suppressed.map(({ finding, rule }) => ({
+        ...finding,
+        suppression: {
+          matchType: rule.matchType,
+          value: rule.value,
+          reason: rule.reason,
+          expiresOn: rule.expiresOn ?? (rule.expiresAt ? new Date(rule.expiresAt).toISOString().slice(0, 10) : null),
+          origin: rule.origin ?? 'file',
+        },
+      })),
+    }, null, 2);
   }
 
   const on = useColor ?? Boolean(process.stdout.isTTY);
@@ -54,8 +76,16 @@ export function renderResults({ findings, gate, errors = [], output = 'rich', co
   }
 
   lines.push('');
-  const counts = SEV_ORDER.filter((s) => gate.bySeverity[s]).map((s) => color(on, s, `${gate.bySeverity[s]} ${s.toLowerCase()}`)).join('  ');
-  lines.push(`${BOLD}Summary:${RESET} ${findings.length} finding(s)${counts ? `  —  ${counts}` : ''}`);
+  // The listing above is every finding; the gate may have judged only the changed files. Label both
+  // rather than printing one set of counts against the other's total.
+  const sevLine = (by) => SEV_ORDER.filter((s) => by?.[s]).map((s) => color(on, s, `${by[s]} ${s.toLowerCase()}`)).join('  ');
+  const totalBy = scope ? scope.totalBySeverity : gate.bySeverity;
+  const totals = sevLine(totalBy);
+  lines.push(`${BOLD}Summary:${RESET} ${findings.length} finding(s)${totals ? `  —  ${totals}` : ''}`);
+  if (scope) {
+    const gated = sevLine(gate.bySeverity);
+    lines.push(`${DIM}Gate scope:${RESET} ${scope.gatedCount} in changed files vs ${scope.diffBase}${gated ? `  —  ${gated}` : '  —  none'}`);
+  }
 
   if (errors.length) {
     lines.push(`${SEV_COLOR.HIGH}⚠ ${errors.length} engine error(s):${RESET} ${errors.map((e) => e.engine).join(', ')}`);

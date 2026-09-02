@@ -53,6 +53,42 @@ export function redactSecrets(text) {
 }
 
 /**
+ * Redact a multi-line block WITHOUT changing how many lines it has.
+ *
+ * WHY THIS EXISTS. The PEM pattern spans a whole key block, so redacting a
+ * code-context window line by line could never match it: only the
+ * `-----BEGIN…-----` header line was masked and the base64 body — the actual
+ * private key — passed through untouched and was uploaded in
+ * `evidence.codeContext`. Found in a pre-release security review, 2026-09-02;
+ * it contradicted the CLI's own promise that secret values never leave the
+ * machine.
+ *
+ * Joining the window and calling redactSecrets() fixes the masking but breaks
+ * the line numbering, because a multi-line match collapses to a single token and
+ * every following line shifts. So each match keeps its newline count: the
+ * credential is gone, the block still occupies the same lines, and the `n` /
+ * `isMatch` mapping on either side stays correct.
+ *
+ * @param {string} text  a block of text (typically a joined code-context window)
+ * @returns {string}     same line count, credentials masked
+ */
+export function redactSecretsPreservingLines(text) {
+  if (typeof text !== 'string' || !text) return text;
+  // Mark EVERY line of a multi-line match, not just the first. A code-context
+  // window is a SLICE of the file, so a block whose mask landed on a line outside
+  // the window rendered as blank lines — no leak, but a reviewer reading the
+  // snippet sees nothing and cannot tell redaction from an empty file.
+  const keepLines = (m) => {
+    const newlines = (m.match(/\n/g) || []).length;
+    return newlines ? Array(newlines + 1).fill(MASK).join('\n') : MASK;
+  };
+  let out = text;
+  for (const re of PATTERNS) out = out.replace(re, keepLines);
+  out = out.replace(GENERIC_ASSIGN, (m, key, sep, q) => `${key}${sep}${q}${MASK}${q}`);
+  return out;
+}
+
+/**
  * Deep-redact every string in an arbitrary JSON-ish value (objects/arrays/strings).
  * Used server-side as defense-in-depth over untrusted evidence.
  */
@@ -65,6 +101,27 @@ export function redactDeep(value) {
     return out;
   }
   return value;
+}
+
+/**
+ * Make untrusted text safe to print on ONE terminal line.
+ *
+ * A suppression `reason` is attacker-controlled — it comes from a file in the
+ * scanned repo, or from a platform rule stored with only trim+slice. Printed
+ * raw, a trailing carriage return plus padding overwrites the line just written,
+ * and ANSI escapes can recolour or clear it: the single log line recording that a
+ * finding was suppressed can be made to vanish from CI output. Found in a
+ * pre-release security review, 2026-09-02. The server already strips control
+ * characters on the way IN; nothing did on the way OUT.
+ *
+ * Control characters (including CR/LF/ESC) become spaces, and the result is
+ * clipped, so one entry can never take over the log.
+ */
+export function sanitizeForLog(text, max = 300) {
+  if (typeof text !== 'string') return '';
+  // eslint-disable-next-line no-control-regex -- stripping control chars IS the point
+  const flat = text.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max)}\u2026` : flat;
 }
 
 export const _MASK = MASK;

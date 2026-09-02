@@ -16,10 +16,12 @@ import { readFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { scannerEnv } from '../lib/scanner-env.js';
 
 import { normalizeTrivyConfigResults } from '../normalize.js';
 import { attachCodeContext } from '../code-context.js';
 import { attachBlame } from '../git-blame.js';
+import { finalStageIsNonRoot, ROOT_USER_CHECK_IDS } from '../lib/nonroot-base-images.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -79,7 +81,7 @@ export async function scanIac(repoPath) {
     ];
     try {
       await execFileAsync(TRIVY_BIN, args, {
-        timeout: IAC_TIMEOUT_MS,
+        env: scannerEnv(), timeout: IAC_TIMEOUT_MS,
         maxBuffer: 32 * 1024 * 1024,
       });
     } catch (err) {
@@ -95,7 +97,19 @@ export async function scanIac(repoPath) {
 
     const raw = await readFile(reportPath, 'utf8');
     const json = raw.trim() ? JSON.parse(raw) : {};
-    const findings = normalizeTrivyConfigResults(json, { repoRoot: repoPath });
+    let findings = normalizeTrivyConfigResults(json, { repoRoot: repoPath });
+    // DS-0002 ("Image user should not be 'root'") reads only Dockerfile instructions and never
+    // resolves the base image's own config, so a final stage of e.g. distroless `:nonroot` — which
+    // runs as uid 65532 — is reported as running as root. Drop those: the alternative is asking
+    // people to add a USER line that changes nothing, which teaches them the scanner is wrong.
+    // Unreadable or unrecognised base => finding KEPT. Never suppress on a guess.
+    findings = (await Promise.all(findings.map(async (f) => {
+      if (!ROOT_USER_CHECK_IDS.has(f.ruleId) || !f.file) return f;
+      try {
+        const df = await readFile(path.join(repoPath, f.file), 'utf8');
+        return finalStageIsNonRoot(df) ? null : f;
+      } catch { return f; }
+    }))).filter(Boolean);
     // Attach compliance frameworks + category by rule id (built-in AVD or SS-*).
     const mappings = await loadMappings();
     for (const f of findings) {

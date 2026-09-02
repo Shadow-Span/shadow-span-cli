@@ -20,10 +20,29 @@ export function isRuleActive(rule, now = new Date()) {
   return new Date(rule.expiresAt).getTime() > new Date(now).getTime();
 }
 
+// Bounds on a glob we will compile to a regex. `.*` sequences backtrack
+// exponentially in the number of wildcards, so the exponent is capped rather
+// than left to whoever wrote the rule. Real globs use one or two wildcards;
+// 8 is far past any legitimate pattern and keeps the worst case in single-digit
+// milliseconds (measured: 8 wildcards ~7ms, 12 ~13s, 14 ~135s).
+export const MAX_GLOB_LEN = 200;
+export const MAX_GLOB_WILDCARDS = 8;
+
 // Minimal, predictable glob → matches a repo-relative path. Supports `*`
 // (any chars except `/`), `**` (any chars incl `/`), and a leading `**/`.
 // Anchored full-string match. Intentionally small — not a full globstar impl.
+//
+// NOTE: this is NO LONGER how paths are matched — pathMatchesGlob below is a
+// linear matcher with no regex engine. This remains for callers that need a
+// RegExp (and for the SQL-predicate shapes), and throws on a glob complex enough
+// to be dangerous rather than returning a regex that can hang the process.
 export function globToRegExp(glob) {
+  if (typeof glob !== 'string' || glob.length > MAX_GLOB_LEN) {
+    throw new Error(`glob too long (max ${MAX_GLOB_LEN})`);
+  }
+  if ((glob.match(/\*/g) || []).length > MAX_GLOB_WILDCARDS * 2) {
+    throw new Error(`glob has too many wildcards (max ${MAX_GLOB_WILDCARDS})`);
+  }
   let re = '';
   for (let i = 0; i < glob.length; i++) {
     const c = glob[i];
@@ -39,9 +58,71 @@ export function globToRegExp(glob) {
   return new RegExp('^' + re + '$');
 }
 
+/**
+ * Match ONE path segment against ONE glob segment. `*` matches any run of
+ * characters inside the segment; everything else is literal.
+ *
+ * Classic two-pointer wildcard match with a single backtrack point — correct
+ * because there is only ONE kind of wildcard at this level, and O(seg x pat)
+ * worst case with no regex engine to backtrack.
+ */
+function matchSegment(seg, pat) {
+  let s = 0;
+  let p = 0;
+  let starP = -1;
+  let starS = 0;
+  while (s < seg.length) {
+    if (p < pat.length && pat[p] !== '*' && pat[p] === seg[s]) { p += 1; s += 1; continue; }
+    if (p < pat.length && pat[p] === '*') { starP = p; starS = s; p += 1; continue; }
+    if (starP >= 0) { starS += 1; s = starS; p = starP + 1; continue; }
+    return false;
+  }
+  while (p < pat.length && pat[p] === '*') p += 1;
+  return p === pat.length;
+}
+
+/**
+ * Match a repo-relative path against a glob, in LINEAR time.
+ *
+ * WHY NOT THE REGEX ABOVE. `globToRegExp` turns every `**` into `.*`, and a
+ * regex with several `.*` separated by literals backtracks catastrophically on a
+ * near-miss. Measured 2026-09-02 in a pre-release security review: a 31-char glob
+ * took 300ms, 34 took 2.7s, 37 took 25.9s — exponential, so ~45 chars is hours.
+ * Globs arrive from platform suppression rules, which are shipped to every CLI
+ * run, and from a repo's own `.shadowspanignore`. A scanner that can be wedged by
+ * one line of config is a denial of service on the customer's pipeline.
+ *
+ * Matching is done in two nested two-pointer passes — segments here, characters
+ * in matchSegment — so each level has exactly ONE kind of wildcard and one
+ * backtrack point. A single flat pass is NOT enough: `**\/*.test.js` has two
+ * adjacent wildcards, and the second overwrites the first's backtrack point, so
+ * `src/a.test.js` stops matching. (Caught by the existing contract test, which is
+ * why it is worth keeping.)
+ *
+ * Semantics are unchanged from the regex: `*` matches within one segment, `**`
+ * matches zero or more whole segments, `?` and the rest are literal.
+ */
 export function pathMatchesGlob(path, glob) {
   if (!path || !glob) return false;
-  try { return globToRegExp(glob).test(path); } catch { return false; }
+
+  const P = path.split('/');
+  const G = glob.split('/');
+
+  let i = 0;      // path segment
+  let j = 0;      // glob segment
+  let starJ = -1; // glob index of the most recent `**`
+  let starI = 0;  // path index when we took it
+
+  while (i < P.length) {
+    if (j < G.length && G[j] === '**') { starJ = j; starI = i; j += 1; continue; }
+    if (j < G.length && matchSegment(P[i], G[j])) { i += 1; j += 1; continue; }
+    if (starJ >= 0) { starI += 1; i = starI; j = starJ + 1; continue; }
+    return false;
+  }
+
+  // A trailing `**` may match zero remaining segments.
+  while (j < G.length && G[j] === '**') j += 1;
+  return j === G.length;
 }
 
 /**

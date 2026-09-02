@@ -22,6 +22,7 @@ import { promisify } from 'node:util';
 import { readFile, mkdtemp, rm, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { scannerEnv } from '../lib/scanner-env.js';
 
 import { normalizeTrivyConfigResults } from '../normalize.js';
 import { attachCodeContext } from '../code-context.js';
@@ -184,9 +185,21 @@ export async function scanBicep(repoPath) {
       // 1. Compile .bicep → ARM JSON. A syntax error exits non-zero with no
       //    output — that's the customer's build problem, not a security
       //    finding; log + skip so one bad file can't sink the whole scan.
+      // bicepFile is derived from walking a repository we do not trust. A path
+      // beginning with `-` would be parsed as a FLAG by the bicep CLI, the same
+      // class as the trivy image injection fixed in container.js. That one is
+      // closed with a `--` separator; bicep is not, deliberately — bicep is not
+      // installed here, so whether it honours `--` is unverified, and a guard we
+      // can actually test beats a separator we cannot. Currently unreachable
+      // (repoPath is absolutised before the walk), which is why the cheap check
+      // is the right size of fix: it pins an invariant that lives in another file.
+      if (path.basename(bicepFile).startsWith('-')) {
+        console.warn(`[APPSEC] skipping bicep file with a leading dash: ${bicepFile}`);
+        continue;
+      }
       try {
         await execFileAsync(BICEP_BIN, ['build', bicepFile, '--outfile', armPath], {
-          timeout: BICEP_TIMEOUT_MS,
+          env: scannerEnv(), timeout: BICEP_TIMEOUT_MS,
           maxBuffer: 16 * 1024 * 1024,
         });
       } catch (err) {
@@ -203,7 +216,7 @@ export async function scanBicep(repoPath) {
       const reportPath = path.join(workDir, `report-${i}.json`);
       try {
         await execFileAsync(TRIVY_BIN, ['config', '--format', 'json', '--output', reportPath, '--quiet', armPath], {
-          timeout: IAC_TIMEOUT_MS,
+          env: scannerEnv(), timeout: IAC_TIMEOUT_MS,
           maxBuffer: 32 * 1024 * 1024,
         });
       } catch (err) {
@@ -261,5 +274,5 @@ export async function scanBicep(repoPath) {
 }
 
 export function isBicepAvailable() {
-  return execFileAsync(BICEP_BIN, ['--version'], { timeout: 10_000 }).then(() => true).catch(() => false);
+  return execFileAsync(BICEP_BIN, ['--version'], { env: scannerEnv(), timeout: 10_000 }).then(() => true).catch(() => false);
 }

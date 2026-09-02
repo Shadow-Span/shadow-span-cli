@@ -18,6 +18,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { scannerEnv } from '../lib/scanner-env.js';
 
 import { normalizeAstGrepResults } from '../normalize.js';
 import { attachCodeContext } from '../code-context.js';
@@ -49,7 +50,7 @@ export async function scanSast(repoPath) {
   let stdout = '';
   try {
     ({ stdout } = await execFileAsync(ASTGREP_BIN, args, {
-      timeout: SAST_TIMEOUT_MS,
+      env: scannerEnv(), timeout: SAST_TIMEOUT_MS,
       maxBuffer: 32 * 1024 * 1024,
     }));
   } catch (err) {

@@ -15,6 +15,7 @@ import { promisify } from 'node:util';
 import { readFile, mkdtemp, rm, lstat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { scannerEnv } from '../lib/scanner-env.js';
 
 import { parseDockerfileFromImages, normalizeTrivyImageResults } from '../normalize.js';
 import { findDockerfiles } from '../lib/dockerfiles.js';
@@ -83,10 +84,19 @@ async function scanImage(image) {
       '--output', reportPath,
       '--quiet',
       '--timeout', `${Math.floor(IMAGE_TIMEOUT_MS / 1000)}s`,
+      // `--` ends flag parsing. Trivy uses cobra/pflag, which otherwise accepts
+      // flags AFTER positionals, so an image name beginning with `-` — and the
+      // name comes from a FROM line in a repository we do not trust — was parsed
+      // as a trivy flag rather than as an image. `--config=<repo file>` then gave
+      // the scanned repo control of server.addr, module.dir (WASM), registry
+      // credentials and insecure. parseDockerfileFromImages also rejects leading
+      // dashes now; both layers stay, because either alone is one refactor away
+      // from being the only one.
+      '--',
       image,
     ];
     try {
-      await execFileAsync(TRIVY_BIN, args, { timeout: IMAGE_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 });
+      await execFileAsync(TRIVY_BIN, args, { env: scannerEnv(), timeout: IMAGE_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 });
     } catch (err) {
       // Trivy exits 0 on found-vulns. A non-zero exit with a written report is
       // still usable; otherwise it's a real failure (pull error, bad ref).

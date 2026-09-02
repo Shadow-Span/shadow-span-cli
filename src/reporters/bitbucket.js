@@ -49,7 +49,7 @@ export function buildAnnotations(findings, severityOf) {
   }));
 }
 
-export async function post({ ctx, findings, gate, reportUrl, log = () => {} }) {
+export async function post({ scope, ctx, findings, gate, reportUrl, log = () => {} }) {
   const { token, workspace, repo, commit, prId, apiBase } = ctx;
   const call = api(token, apiBase);
   const base = `/repositories/${workspace}/${repo}`;
@@ -59,7 +59,9 @@ export async function post({ ctx, findings, gate, reportUrl, log = () => {} }) {
   try {
     const r = await call('PUT', `${base}/commit/${commit}/reports/${REPORT_ID}`, {
       title: 'Shadow Span AppSec',
-      details: `${findings.length} finding(s) · ${gate.blockingCount} at or above ${gate.failOn}`,
+      details: scope
+        ? `${findings.length} finding(s) in repo · ${scope.gatedCount} in this PR's changed files · ${gate.blockingCount} at or above ${gate.failOn}`
+        : `${findings.length} finding(s) · ${gate.blockingCount} at or above ${gate.failOn}`,
       report_type: 'SECURITY',
       reporter: 'Shadow Span',
       result: gate.blocked ? 'FAILED' : 'PASSED',
@@ -87,7 +89,7 @@ export async function post({ ctx, findings, gate, reportUrl, log = () => {} }) {
   // 3. PR summary comment (if a PR id is in context).
   if (prId) {
     try {
-      const r = await call('POST', `${base}/pullrequests/${prId}/comments`, { content: { raw: buildSummary({ findings, gate, reportUrl }) } });
+      const r = await call('POST', `${base}/pullrequests/${prId}/comments`, { content: { raw: buildSummary({ findings, gate, reportUrl, scope }) } });
       result.comment = r.ok ? 'posted' : `error ${r.status}`;
     } catch (e) { result.comment = `exception ${e.message}`; }
   }

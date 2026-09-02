@@ -28,14 +28,14 @@ export function resolveContext(env = process.env) {
  * Post PR/MR feedback via the detected provider. Returns a result object (or
  * { skipped } when there's no usable context). Never throws.
  */
-export async function postPrFeedback({ findings, gate, reportUrl, env = process.env, log = () => {} }) {
+export async function postPrFeedback({ findings, gate, reportUrl, scope, env = process.env, log = () => {} }) {
   const resolved = resolveContext(env);
   if (!resolved) {
     const p = detectProvider(env);
     return { skipped: p ? `${p}: missing PR/MR context or token` : 'no supported CI platform detected' };
   }
   try {
-    return await REPORTERS[resolved.provider].post({ ctx: resolved.ctx, findings, gate, reportUrl, log });
+    return await REPORTERS[resolved.provider].post({ ctx: resolved.ctx, findings, gate, reportUrl, scope, log });
   } catch (e) {
     return { provider: resolved.provider, error: e.message };
   }

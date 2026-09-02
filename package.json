@@ -43,6 +43,9 @@
     "engine",
     "!engine/**/__fixtures__",
     "!engine/**/_fixtures",
+    "!src/__tests__",
+    "!engine/**/__tests__",
+    "CHANGELOG.md",
     "THIRD_PARTY_NOTICES.md",
     "LICENSE",
     "NOTICE"

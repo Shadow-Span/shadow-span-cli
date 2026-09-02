@@ -12,18 +12,33 @@ export function escapePipe(s) { return String(s || '').replace(/\|/g, '\\|').rep
  * Markdown summary comment. Idempotent: carries MARKER so a reporter can
  * find-and-edit its prior comment instead of stacking duplicates on re-push.
  */
-export function buildSummary({ findings, gate, reportUrl } = {}) {
+function severityLine(bySeverity) {
+  return SEV_ORDER
+    .filter((s) => bySeverity?.[s])
+    .map((s) => `${SEV_EMOJI[s]} **${bySeverity[s]}** ${s.toLowerCase()}`)
+    .join(' · ');
+}
+
+/**
+ * @param {object} [opts.scope]  present only when the gate was diff-scoped. Carries the WHOLE-REPO
+ *   counts, because `gate.bySeverity` describes the changed-files subset the gate judged while the
+ *   table below lists everything. Reporting one number for both populations is what made this
+ *   comment read "5 high" directly above a table of 24 HIGH rows.
+ */
+export function buildSummary({ findings, gate, reportUrl, scope } = {}) {
   const lines = [MARKER, '', '## 🛡️ Shadow Span AppSec'];
   if (!findings || findings.length === 0) {
     lines.push('', '✅ No findings. Gate passed.');
     return lines.join('\n');
   }
 
-  const counts = SEV_ORDER
-    .filter((s) => gate?.bySeverity?.[s])
-    .map((s) => `${SEV_EMOJI[s]} **${gate.bySeverity[s]}** ${s.toLowerCase()}`)
-    .join(' · ');
-  lines.push('', counts);
+  if (scope) {
+    // Two populations, each labelled with what it is and why it differs.
+    lines.push('', `**In this PR's changed files** — what the gate judges: ${severityLine(gate?.bySeverity) || '_none_'}`);
+    lines.push('', `**Whole repository** — ${scope.totalCount} finding(s): ${severityLine(scope.totalBySeverity)}`);
+  } else {
+    lines.push('', severityLine(gate?.bySeverity));
+  }
 
   lines.push('', gate?.blocked
     ? `### ❌ Gate failed — ${gate.blockingCount} finding(s) at or above \`${gate.failOn}\``
@@ -32,6 +47,11 @@ export function buildSummary({ findings, gate, reportUrl } = {}) {
   const sorted = [...findings].sort((a, b) =>
     SEV_ORDER.indexOf(a.severity) - SEV_ORDER.indexOf(b.severity));
   const top = sorted.slice(0, 50);
+  // Say which set this is. It lists the whole repository, not the gated subset, and a reader who
+  // assumes otherwise concludes the counts above are broken.
+  lines.push('', scope
+    ? `#### All findings in the repository (${sorted.length}) — not only the gated subset`
+    : `#### Findings (${sorted.length})`);
   lines.push('', '| Severity | Type | Finding | Location |', '|---|---|---|---|');
   for (const f of top) {
     const loc = f.file ? `\`${f.file}${f.line ? `:${f.line}` : ''}\`` : '—';

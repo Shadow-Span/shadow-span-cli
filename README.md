@@ -55,7 +55,7 @@ commit …` (raw hook).
 | `--engines` | `secret,sca,sast,iac` (default: all) |
 | `--staged` | fast path: secrets + SAST (pre-commit) |
 | `--diff` | mark partial (won't close prior findings) |
-| `--fail-on` | `none\|low\|medium\|high\|critical` (default `high`) |
+| `--fail-on` | `none\|low\|medium\|high\|critical\|unknown` (default `high`). `unknown` blocks every finding, including unscored ones. |
 | `--soft-fail` | never exit non-zero on findings |
 | `--report` / `--no-report` | upload findings (opt-in; off by default for `--staged`) |
 | `--output` | `rich` (default) or `json` |
@@ -97,6 +97,84 @@ vendor/**
 Suppressed findings are counted and reported (with the rule that matched) when
 `--report` is on, so an exclusion is visible in the platform rather than silent.
 Organization-wide exclusions are configured in Shadow Span and apply on top.
+
+## Accepting a single finding
+
+Use a path exclude to skip code you never want scanned. Use a **suppression** to
+accept one specific finding you have looked at and decided not to act on — a
+vulnerability with no fix published, or one you have established you don't reach.
+
+Commit a `.shadowspan-suppressions.json` at the repo root:
+
+```json
+{
+  "suppressions": [
+    {
+      "matchType": "RULE_ID",
+      "value": "CVE-2026-1234",
+      "expiresAt": "2027-03-01",
+      "reason": "No fixed version published. We never call the affected API — verified with `go list -deps`.",
+      "upstream": "https://github.com/org/repo/issues/1"
+    }
+  ]
+}
+```
+
+| Field | | |
+|---|---|---|
+| `matchType` | required | `RULE_ID` (an advisory: `CVE-…`, `GHSA-…`, `GO-…`), `PACKAGE` (a dependency name), or `CWE` |
+| `value` | required | what to match |
+| `expiresAt` | required | `YYYY-MM-DD`, at most 365 days out |
+| `reason` | required | why this is acceptable — the next person to read it is the one deciding whether to renew |
+| `upstream` | optional | link to the advisory or upstream issue |
+
+Rules of the format, and why:
+
+- **Expiry is mandatory and capped at a year.** An expired entry simply stops
+  suppressing, so the finding starts blocking again on its own. A suppression
+  cannot become permanent by neglect.
+- **Only precise match types.** `PATH_GLOB`, `FINDING_TYPE` and `ECOSYSTEM` are
+  rejected here on purpose — a single entry using one of them could silence a
+  whole class of findings, and it would look like ordinary config in a diff. Use
+  `.shadowspanignore` for paths, or an org rule in the platform, where the
+  decision is attributable and audited.
+- **Malware can never be suppressed.** A package flagged as malicious is an
+  incident, not a finding to accept, whatever a rule claims to match.
+- **Prefer a suppression over a path exclude for an unfixable advisory.**
+  Excluding the manifest hides every *future* advisory in it too.
+
+Org-wide suppression rules created in Shadow Span are fetched and applied as
+well, so a risk accepted in the dashboard also stops blocking your pipeline.
+
+## Connecting to the platform
+
+`--report` needs two things: a key with the **WRITE_APPSEC** scope, and the
+**app** host.
+
+```bash
+export SHADOWSPAN_API_KEY=ss_live_...
+shadow-span scan --report --api-url https://app.shadowspan.com
+```
+
+**Point `--api-url` at the app host, not your marketing domain.** If the two are
+different hostnames and the marketing one redirects to the app one, the request
+does not survive the hop: browsers and Node both strip the `Authorization` header
+across a cross-origin redirect, and a 301 turns a POST into a GET. The result is
+an authentication failure that has nothing to do with your key.
+
+The CLI refuses to follow such a redirect and tells you the host to use instead:
+
+```
+✗ Report failed (HTTP 301): https://shadowspan.com redirects to
+  https://app.shadowspan.com. Point --api-url (or SHADOWSPAN_API_URL) at
+  https://app.shadowspan.com — credentials are not carried across a redirect,
+  so the scan would be rejected.
+```
+
+Use an **organization** key rather than a personal one for CI. A personal key's
+scopes are intersected with its owner's current access on every request, so it
+narrows the moment that person changes role or leaves — which is correct for a
+human, and an outage for a pipeline.
 
 ## What is sent to the platform
 

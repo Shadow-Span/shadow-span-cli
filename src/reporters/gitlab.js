@@ -47,11 +47,11 @@ export function inlinePosition(ctx, file, line) {
   };
 }
 
-export async function post({ ctx, findings, gate, reportUrl, log = () => {} }) {
+export async function post({ scope, ctx, findings, gate, reportUrl, log = () => {} }) {
   const { token, projectId, mrIid, apiBase, headSha } = ctx;
   const call = api(token, apiBase);
   const base = `/projects/${encodeURIComponent(projectId)}/merge_requests/${mrIid}`;
-  const summary = buildSummary({ findings, gate, reportUrl });
+  const summary = buildSummary({ findings, gate, reportUrl, scope });
   const result = { provider: 'gitlab', summary: null, inline: null };
 
   // Summary note — upsert by MARKER.

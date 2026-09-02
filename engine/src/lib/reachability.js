@@ -189,9 +189,18 @@ async function readWorkspaceManifests(repoPath, dir, globs) {
         members = entries.filter((e) => e.isDirectory()).map((e) => path.posix.join(parent, e.name));
       } catch { members = []; }
     }
+    const root = path.resolve(repoPath);
     for (const m of members) {
       if (texts.length >= MAX_WORKSPACE_MANIFESTS) break;
-      try { texts.push(await readFile(path.join(repoPath, dir, m, 'package.json'), 'utf8')); }
+      // `members` derives from the `workspaces` array in a package.json we do not
+      // trust, so it can contain '../../..'. Resolve and confirm the result is
+      // still inside the repo before reading — otherwise a repo could walk the
+      // scanner up to the runner's home directory. Bounded today (only files
+      // named package.json are read, and their contents are never emitted), which
+      // is exactly why the containment check must not be the missing one.
+      const abs = path.resolve(root, dir, m, 'package.json');
+      if (!abs.startsWith(root + path.sep)) continue;
+      try { texts.push(await readFile(abs, 'utf8')); }
       catch { /* not a workspace member after all */ }
     }
   }

@@ -17,6 +17,7 @@ import { promisify } from 'node:util';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { scannerEnv } from '../lib/scanner-env.js';
 
 import { normalizeNucleiResults } from '../normalize.js';
 
@@ -101,7 +102,7 @@ export async function scanDast(targetUrl, opts = {}) {
     let execError = null;
     try {
       await execFileAsync('nuclei', args, {
-        timeout: NUCLEI_TIMEOUT_MS,
+        env: scannerEnv(), timeout: NUCLEI_TIMEOUT_MS,
         maxBuffer: 32 * 1024 * 1024,
       });
     } catch (err) {

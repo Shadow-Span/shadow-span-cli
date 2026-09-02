@@ -18,6 +18,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { scannerEnv } from '../lib/scanner-env.js';
 
 import { normalizeZapResults } from '../normalize.js';
 
@@ -30,7 +31,7 @@ const ZAP_WALL_CLOCK_MS = Math.max(60_000, Number(process.env.APPSEC_ZAP_WALL_CL
 
 export async function isZapAvailable() {
   try {
-    await execFileAsync(ZAP_BIN, ['-version'], { timeout: 15_000 });
+    await execFileAsync(ZAP_BIN, ['-version'], { env: scannerEnv(), timeout: 15_000 });
     return true;
   } catch {
     return false;
@@ -133,7 +134,7 @@ export async function scanZap(targetUrl, opts = {}) {
     await writeFile(planPath, plan, 'utf8');
     try {
       await execFileAsync(ZAP_BIN, ['-cmd', '-autorun', planPath], {
-        timeout: ZAP_WALL_CLOCK_MS,
+        env: scannerEnv(), timeout: ZAP_WALL_CLOCK_MS,
         maxBuffer: 64 * 1024 * 1024,
       });
     } catch (err) {

@@ -34,10 +34,10 @@ function api(token, apiBase) {
   };
 }
 
-export async function post({ ctx, findings, gate, reportUrl, log = () => {} }) {
+export async function post({ scope, ctx, findings, gate, reportUrl, log = () => {} }) {
   const { token, owner, repo, prNumber, commitSha, apiBase } = ctx;
   const call = api(token, apiBase);
-  const summary = buildSummary({ findings, gate, reportUrl });
+  const summary = buildSummary({ findings, gate, reportUrl, scope });
   const reviewComments = buildReviewComments({ findings });
   const result = { provider: 'github', summary: null, review: null };
 

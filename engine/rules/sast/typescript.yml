@@ -51,10 +51,21 @@ id: ts-sql-query-template
 language: typescript
 severity: error
 message: SQL query built with a template literal interpolates values directly into SQL — use parameterized queries (CWE-89).
+# The `has: template_substitution` constraint is the whole rule. Matching `$DB.query(`$$$PARTS`)`
+# alone flags EVERY backtick query — including multi-line SQL with nothing interpolated, which is
+# just how readable SQL is written. On our own repo that was 27 of 32 findings: an 84% false
+# positive rate on a HIGH-severity rule feeding a gate that defaults to fail-on: high. The message
+# has always said "interpolates values directly into SQL"; the pattern never checked that it did.
 rule:
   any:
-    - pattern: $DB.query(`$$$PARTS`)
-    - pattern: $DB.execute(`$$$PARTS`)
+    - pattern: $DB.query($TPL)
+    - pattern: $DB.execute($TPL)
+constraints:
+  TPL:
+    kind: template_string
+    has:
+      kind: template_substitution
+      stopBy: end
 ---
 id: ts-sql-query-concat
 language: typescript
@@ -158,9 +169,28 @@ id: ts-insecure-random
 language: typescript
 severity: info
 message: Math.random() is not cryptographically secure — use crypto.randomBytes/randomUUID for tokens, keys, or IDs (CWE-338).
-rule: { pattern: Math.random() }
-
-# ── SSRF (CWE-918) ──────────────────────────────────────────────────────────
+# Scoped to what the message actually claims. `pattern: Math.random()` alone flagged all 52 uses in
+# this repo — retry jitter, array shuffles, demo seed data, test slugs — none of which are security
+# values. A rule that contradicts its own stated scope trains people to ignore it. Now it fires only
+# where the surrounding binding names a secret, which is the class CWE-338 is about.
+rule:
+  all:
+    - pattern: Math.random()
+    - inside:
+        any:
+          - kind: variable_declarator
+          - kind: pair
+          - kind: assignment_expression
+        # Stop at the NEAREST enclosing binding, not `stopBy: end`. Walking every ancestor meant a
+        # Math.random() anywhere inside an object that happened to carry a `token` key elsewhere was
+        # flagged — IP addresses and timestamps in the demo seeders matched that way. `\bkey\b` is
+        # also gone: it caught sort keys and map keys, never a cryptographic one.
+        regex: "(?i)(token|secret|passw|nonce|salt|otp|credential|signature|apikey|api_key|sessionid)"
+        stopBy:
+          any:
+            - kind: pair
+            - kind: variable_declarator
+            - kind: assignment_expression
 ---
 id: ts-ssrf-url-concat
 language: typescript
@@ -232,14 +262,26 @@ id: ts-cors-wildcard
 language: typescript
 severity: warning
 message: CORS configured with a wildcard or reflected origin (origin "*" or true) allows any site to read authenticated responses (CWE-942).
+# The previous rule used `selector: pair` under a `cors(...)` context. `selector` NARROWS the match
+# to the sub-node, so the surrounding cors() call was used only for parsing and never constrained
+# anything — every `origin: true` pair in the codebase matched. On our own tree that meant four
+# findings on Prisma `select: { origin: true }`, where `origin` is a column on ThreatActor. It also
+# missed the only place we actually set CORS (a response header), so the rule was simultaneously
+# noisy and blind. Now: a real cors() call carrying a wildcard, or the raw header set to "*".
 rule:
   any:
-    - pattern:
-        context: 'cors({ origin: "*" })'
-        selector: pair
-    - pattern:
-        context: "cors({ origin: true })"
-        selector: pair
+    - all:
+        - pattern: cors($$$ARGS)
+        - has:
+            kind: pair
+            regex: "origin:\\s*(true|['\"]\\*['\"])"
+            stopBy: end
+    - all:
+        - kind: call_expression
+        - regex: "Access-Control-Allow-Origin['\"]\\s*,\\s*['\"]\\*['\"]"
+    - all:
+        - kind: pair
+        - regex: "['\"]Access-Control-Allow-Origin['\"]\\s*:\\s*['\"]\\*['\"]"
 ---
 id: ts-cookie-insecure-flag
 language: typescript
@@ -331,10 +373,15 @@ id: ts-sequelize-raw-query
 language: typescript
 severity: warning
 message: ORM raw query (sequelize.query/knex.raw) with a non-literal SQL string may interpolate untrusted input — use bind parameters (CWE-89).
+# Scoped to the ORMs the message names. It used to match `$DB.query($Q)` — ANY .query() call with a
+# non-literal argument — so every node-postgres `client.query(SOME_SQL_CONST)` was flagged: 14 on our
+# own tree, in a repo that does not depend on Sequelize or Knex at all. `.raw()` is distinctive;
+# `.query()` is not.
 rule:
   any:
-    - pattern: $DB.query($Q)
     - pattern: $DB.raw($Q)
+    - pattern: sequelize.query($Q)
+    - pattern: $X.sequelize.query($Q)
 constraints:
   Q:
     not:

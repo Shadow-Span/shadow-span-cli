@@ -18,6 +18,7 @@ import { promisify } from 'node:util';
 import { readFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { scannerEnv } from '../lib/scanner-env.js';
 
 import { parseCycloneDxComponents } from '../normalize.js';
 
@@ -62,7 +63,7 @@ export async function generateSbom(repoPath) {
       repoPath,
     ];
     try {
-      await execFileAsync(TRIVY_BIN, args, { timeout: SBOM_TIMEOUT_MS, maxBuffer: 128 * 1024 * 1024 });
+      await execFileAsync(TRIVY_BIN, args, { env: scannerEnv(), timeout: SBOM_TIMEOUT_MS, maxBuffer: 128 * 1024 * 1024 });
     } catch (err) {
       // Trivy can exit non-zero while still writing a usable report; only treat
       // a missing report as a hard failure (same posture as iac.js/container.js).

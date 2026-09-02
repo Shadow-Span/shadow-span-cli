@@ -12,7 +12,7 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { redactSecrets } from './redact.js';
+import { redactSecretsPreservingLines } from './redact.js';
 
 const DEFAULT_CONTEXT_LINES = 3;
 const MAX_LINE_LEN = 200; // clip pathological minified lines
@@ -34,12 +34,30 @@ export async function attachCodeContext(findings, repoRoot, { contextLines = DEF
     let lines = cache.get(f.file);
     if (lines === undefined) {
       try {
-        const abs = path.resolve(repoRoot, f.file);
-        // Defense-in-depth: never read outside the repo root.
-        if (!abs.startsWith(path.resolve(repoRoot))) {
+        const root = path.resolve(repoRoot);
+        const abs = path.resolve(root, f.file);
+        // Defense-in-depth: never read outside the repo root. The separator is
+        // load-bearing — a bare startsWith(root) also admits a SIBLING directory
+        // whose name merely begins with the root ('/repo' matching
+        // '/repo-secrets/x'), which is the classic form of this check being wrong.
+        if (abs !== root && !abs.startsWith(root + path.sep)) {
           lines = null;
         } else {
-          lines = (await readFile(abs, 'utf8')).split(/\r?\n/);
+          // Redact the WHOLE FILE once, here, then cache the redacted lines.
+          //
+          // Redacting only the extracted window is not enough and was the actual
+          // bug: a multi-line pattern needs both of its markers, and a private key
+          // whose `BEGIN` header falls one line ABOVE the window can never match,
+          // so the base64 body was emitted verbatim. Caught end-to-end on a real
+          // scan, after a unit test on a joined block had wrongly said it was
+          // fixed — the window is the thing that ships, so the window is what has
+          // to be tested.
+          //
+          // Line count is preserved, so every window sliced from this still lines
+          // up with the file, and the redaction cost is paid once per file rather
+          // than once per finding.
+          const raw = await readFile(abs, 'utf8');
+          lines = redactSecretsPreservingLines(raw).split(/\r?\n/);
         }
       } catch {
         lines = null;
@@ -53,13 +71,12 @@ export async function attachCodeContext(findings, repoRoot, { contextLines = DEF
     const from = Math.max(1, matchStart - contextLines);
     const to = Math.min(lines.length, matchEnd + contextLines);
 
+    // `lines` is already redacted (whole-file, at read time) — a credential
+    // adjacent to a SAST/IaC hit must never ride into the snippet we
+    // store/transmit (the rotation rule, plan §6a/§9).
     const window = [];
     for (let n = from; n <= to; n++) {
-      const raw = lines[n - 1] ?? '';
-      // Redact any credential sitting in the surrounding lines BEFORE it becomes
-      // part of the finding — a secret adjacent to a SAST/IaC hit must never ride
-      // into the snippet we store/transmit (the rotation rule, plan §6a/§9).
-      const text = redactSecrets(raw);
+      const text = lines[n - 1] ?? '';
       window.push({
         n,
         text: text.length > MAX_LINE_LEN ? `${text.slice(0, MAX_LINE_LEN)}…` : text,

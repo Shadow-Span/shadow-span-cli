@@ -119,8 +119,22 @@ export async function reportScan({ apiUrl, apiKey, payload, timeoutMs = 30000 })
         'User-Agent': 'shadow-span-cli',
       },
       body: JSON.stringify(payload),
+      // Do NOT follow redirects. Pointing --api-url at the marketing host rather
+      // than the app host (shadowspan.com vs app.shadowspan.com) returns a 301,
+      // and following it destroys the request in two ways at once: `fetch` strips
+      // the Authorization header across origins, and a 301 rewrites POST to GET.
+      // The user saw "HTTP 405: unknown error" — which says nothing about the
+      // actual mistake. Verified against dev 2026-09-02.
+      redirect: 'manual',
       signal: AbortSignal.timeout(timeoutMs),
     });
+    if (res.status >= 300 && res.status < 400) {
+      const to = res.headers.get('location') || '';
+      const host = (() => { try { return new URL(to, url).origin; } catch { return to; } })();
+      return { ok: false, status: res.status, body: { error:
+        `${apiUrl} redirects to ${host}. Point --api-url (or SHADOWSPAN_API_URL) at ${host} — `
+        + 'credentials are not carried across a redirect, so the scan would be rejected.' } };
+    }
     let body = null;
     try { body = await res.json(); } catch { /* non-JSON */ }
     return { ok: res.ok, status: res.status, body };

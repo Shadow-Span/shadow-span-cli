@@ -126,3 +126,48 @@ export async function collectGitInfo(repoPath) {
     commit: { sha, branch, ref: process.env.GITHUB_REF || null },
   };
 }
+
+/**
+ * Infer the PR/MR base ref from CI environment variables.
+ *
+ * PR gating — judge a change on what it changed, report everything — only engages when the CLI
+ * knows the base. On GitHub that was supplied by the Action's entrypoint; on GitLab and Bitbucket
+ * NOTHING supplied it, and nothing inferred it here, so `--fail-on high` judged every finding in
+ * the tree. A repo with any standing debt therefore had a permanently red pipeline on those two
+ * providers from its very first run — the exact "gate that is always red gets ignored" failure the
+ * feature exists to prevent, and the opposite of how the same product behaves on GitHub.
+ *
+ * Variables, from each vendor's own documentation:
+ *   GitHub    GITHUB_BASE_REF                     target branch; set only on pull_request events
+ *   GitLab    CI_MERGE_REQUEST_DIFF_BASE_SHA      the MR diff base COMMIT — preferred: it is the
+ *                                                 exact merge base, needs no remote-ref lookup
+ *             CI_MERGE_REQUEST_TARGET_BRANCH_NAME fallback target branch name
+ *   Bitbucket BITBUCKET_PR_DESTINATION_BRANCH     destination branch; PR-triggered builds only
+ *
+ * Deliberately NOT used: CI_MERGE_REQUEST_TARGET_BRANCH_SHA. GitLab documents it as empty in
+ * ordinary merge request pipelines (populated only in merged-results pipelines), so trusting it
+ * would silently produce an unresolvable base and gate on everything — the bug this fixes.
+ *
+ * Returns null outside a PR/MR context (a push or a local run), where "what changed" has no
+ * equivalent meaning and gating on everything is the correct behaviour.
+ *
+ * @param {Record<string,string|undefined>} [env]
+ * @returns {{ base: string, from: string } | null}
+ */
+export function inferDiffBase(env = process.env) {
+  const val = (k) => (typeof env[k] === 'string' && env[k].trim() ? env[k].trim() : null);
+
+  const githubBase = val('GITHUB_BASE_REF');
+  if (githubBase) return { base: `origin/${githubBase}`, from: 'GITHUB_BASE_REF' };
+
+  const gitlabSha = val('CI_MERGE_REQUEST_DIFF_BASE_SHA');
+  if (gitlabSha) return { base: gitlabSha, from: 'CI_MERGE_REQUEST_DIFF_BASE_SHA' };
+
+  const gitlabBranch = val('CI_MERGE_REQUEST_TARGET_BRANCH_NAME');
+  if (gitlabBranch) return { base: `origin/${gitlabBranch}`, from: 'CI_MERGE_REQUEST_TARGET_BRANCH_NAME' };
+
+  const bitbucketBranch = val('BITBUCKET_PR_DESTINATION_BRANCH');
+  if (bitbucketBranch) return { base: `origin/${bitbucketBranch}`, from: 'BITBUCKET_PR_DESTINATION_BRANCH' };
+
+  return null;
+}

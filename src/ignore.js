@@ -20,6 +20,21 @@ import path from 'node:path';
 
 export const IGNORE_FILENAME = '.shadowspanignore';
 
+// Bounds on one ignore pattern. The compiled regex uses `.*` per `**`, which
+// backtracks exponentially in the number of wildcards on a near-miss — measured
+// 2026-09-02: 8 wildcards 7ms, 10 -> 302ms, 12 -> 13s, 14 -> 135s. This file is
+// committed to the repository, so on a fork PR an outside contributor could hang
+// the maintainer's CI runner with one line of config. Legitimate patterns use one
+// or two wildcards; the cap keeps the worst case in milliseconds.
+const MAX_PATTERN_LEN = 200;
+const MAX_PATTERN_WILDCARDS = 8;
+
+/** Is this pattern small enough to compile safely? */
+export function isPatternSafe(raw) {
+  const p = String(raw || '');
+  return p.length <= MAX_PATTERN_LEN && (p.match(/\*/g) || []).length <= MAX_PATTERN_WILDCARDS * 2;
+}
+
 // Translate one gitignore-ish pattern to a RegExp matching a repo-relative path.
 function patternToRegExp(raw) {
   let p = raw.trim();
@@ -61,6 +76,14 @@ export function parseIgnore(text) {
     const negate = t.startsWith('!');
     const body = negate ? t.slice(1) : t;
     if (!body) continue;
+    // A pattern too complex to compile safely is SKIPPED, not applied. Skipping
+    // fails toward MORE findings (nothing is excluded), which is the safe
+    // direction for a security gate — the alternative is a regex that can hang
+    // the scan. Surfaced so it is not silent.
+    if (!isPatternSafe(body)) {
+      console.warn(`[APPSEC] ${IGNORE_FILENAME}: skipping over-complex pattern (nothing excluded by it): ${t.slice(0, 80)}`);
+      continue;
+    }
     rules.push({ negate, re: patternToRegExp(body), raw: t });
   }
   const test = (rel) => {
@@ -111,6 +134,12 @@ export function applyIgnore(findings, matcher) {
   // RUNNER dropped on top of it, and which rule did it.
   const byRule = new Map();
   for (const f of findings || []) {
+    // MALWARE is never suppressible — the same hard rule the suppression kernel
+    // enforces, and what `shadow-span --help` promises directly under the
+    // .shadowspanignore line. A path exclusion is still a suppression: without
+    // this, `vendor/**` silently hid a malicious package. A hostile dependency is
+    // an incident, not a finding to filter.
+    if (f.type === 'MALWARE') { kept.push(f); continue; }
     if (f.file && matcher.test(f.file)) {
       ignored++;
       const rule = (matcher.which ? matcher.which(f.file) : null) || '(unknown rule)';

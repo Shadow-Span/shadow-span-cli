@@ -891,6 +891,16 @@ export function parseDockerfileFromImages(text) {
     if (stages.has(lower)) continue;            // FROM <earlier-stage>
     if (lower === 'scratch') continue;           // empty base, nothing to scan
     if (/\$\{?\w+/.test(image)) continue;        // FROM ${BASE} — unresolved ARG
+    // ARGUMENT INJECTION (2026-09-02). `(\S+)` happily captures a token starting
+    // with `-`, and the image is passed to trivy as the last positional. Trivy
+    // uses cobra/pflag, which parses flags interspersed with positionals, so a
+    // repo committing `FROM --config=./evil.yaml` made trivy read ITS config —
+    // handing the scanned repository control of server.addr (redirect the scan,
+    // forge verdicts), module.dir + WASM modules, registry credentials and
+    // insecure. Verified against the real binary: `FROM --generate-default-config`
+    // in that slot wrote a file. A `--` separator is added at the call site too;
+    // this is the other half, so a future caller cannot reopen it.
+    if (image.startsWith('-')) continue;
     out.push({ image, line: i + 1 });
   }
   // De-duplicate by image, keeping the first FROM line.

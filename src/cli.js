@@ -4,13 +4,17 @@
 // Exit codes (Aikido/Cycode convention):
 //   0  clean / gate passed
 //   1  findings at or above --fail-on (gate blocked)
-//   2  scan error (all engines failed, or usage error)
+//   2  scan error — usage error, a missing engine binary (preflight), or ANY engine failing
+//      mid-scan. Not "all engines failed": one dead engine means the scan is incomplete, and a
+//      passing gate on an incomplete scan is a false statement.
 
 import { parseArgs } from 'node:util';
 import path from 'node:path';
 import { access, writeFile, chmod } from 'node:fs/promises';
-import { evaluateGate, FAIL_ON_LEVELS, scanDast, scanZap } from '../engine/src/index.js';
+import { evaluateGate, FAIL_ON_LEVELS, scanDast, scanZap, preflight, formatPreflightFailure } from '../engine/src/index.js';
 import { applyPathExclusions } from '../engine/src/lib/path-exclude.js';
+import { loadSuppressionFile, applySuppressions, SUPPRESSION_FILENAME } from '../engine/src/suppression-file.js';
+import { sanitizeForLog } from '../engine/src/redact.js';
 import { runEngines, ALL_ENGINES, FAST_ENGINES } from './scan.js';
 import { fetchAppSecSettings } from './settings.js';
 import { renderResults } from './render.js';
@@ -18,7 +22,7 @@ import { buildPayload, reportScan, buildDastPayload, reportDastScan } from './re
 import { postPrFeedback, detectProvider } from './reporters/index.js';
 import { toSarif } from './formats/sarif.js';
 import { toCodeQuality } from './formats/gitlab-codequality.js';
-import { collectGitInfo, changedFiles } from './git-info.js';
+import { collectGitInfo, changedFiles, inferDiffBase } from './git-info.js';
 import { resolveConfig, saveAuth, DEFAULT_API_URL } from './config.js';
 import { loadIgnore, applyIgnore, IGNORE_FILENAME } from './ignore.js';
 
@@ -37,7 +41,8 @@ SCAN OPTIONS
   --engines <list>   comma list of: secret,sca,sast,iac  (default: all)
   --staged           pre-commit fast path: secrets + SAST only, local-only by default
   --diff             mark this a partial scan (does not close prior findings)
-  --fail-on <level>  none|low|medium|high|critical        (default: high)
+  --fail-on <level>  none|low|medium|high|critical|unknown (default: high)
+                     'unknown' blocks EVERY finding, including unscored ones
   --mode <m>         block (default: exit 1 on findings≥fail-on) | alert (warn, exit 0)
   --soft-fail        alias for --mode alert (never exit non-zero on findings)
   --report           POST findings to the Shadow Span platform (needs an API key)
@@ -63,7 +68,8 @@ DAST OPTIONS (shadow-span dast)
   --severity <list>  [lite] severities: critical,high,medium,low,info
   --templates <list> [lite] comma list of template dirs/files
   --engine <e>       advanced/back-compat alias for --tier: zap (=deep) | nuclei (=lite)
-  --fail-on <level>  none|low|medium|high|critical        (default: high)
+  --fail-on <level>  none|low|medium|high|critical|unknown (default: high)
+                     'unknown' blocks EVERY finding, including unscored ones
   --mode <m>         block (default) | alert (warn, exit 0)
   --report           POST findings to Shadow Span (needs an API key + a
                      domain-verified, ACTIVE DAST target for --url)
@@ -77,6 +83,16 @@ DAST OPTIONS (shadow-span dast)
 DAST runs an ACTIVE scan — only point it at systems you are authorized to test
 (your own pre-prod/staging). The platform additionally refuses --report unless
 --url maps to a domain-verified, authorized target you registered.
+
+REPO FILES (optional, committed alongside your code)
+  .shadowspanignore              path excludes, gitignore-style globs
+  .shadowspan-suppressions.json  accept ONE finding, with a reason + expiry:
+    { "suppressions": [ { "matchType": "RULE_ID", "value": "CVE-2026-1234",
+        "expiresAt": "2027-03-01", "reason": "not reachable — we never call it",
+        "upstream": "https://github.com/org/repo/issues/1" } ] }
+  Prefer a suppression over a path exclude for an unfixable advisory: excluding
+  the manifest also hides every FUTURE advisory in it. Expiry is mandatory, an
+  expired entry stops suppressing, and MALWARE can never be suppressed.
 
 The engine binaries (gitleaks, ast-grep, osv-scanner, trivy, nuclei) run locally;
 your source never leaves your machine. Only normalized finding metadata is sent,
@@ -102,6 +118,8 @@ const OPTIONS = {
   staged: { type: 'boolean' },
   diff: { type: 'boolean' },
   'diff-base': { type: 'string' },
+  // Opt OUT of automatic PR-gate inference and judge every finding (see the gating block below).
+  'no-pr-gate': { type: 'boolean' },
   report: { type: 'boolean' },
   'no-report': { type: 'boolean' },
   // Opt OUT of DEFAULT_EXCLUSIONS. Hunting a supply-chain implant inside node_modules is a real
@@ -190,7 +208,17 @@ async function cmdScan(flags, restPositionals, io) {
   const bad = engines.filter((e) => !ALL_ENGINES.includes(e));
   if (bad.length) { io.error(`Unknown engine(s): ${bad.join(', ')}. Valid: ${ALL_ENGINES.join(', ')}`); return 2; }
 
-  const failOn = FAIL_ON_LEVELS.includes(String(flags['fail-on'])) ? flags['fail-on'] : 'high';
+  // Normalize case, and REJECT an unrecognized level instead of falling back.
+  // A silent fallback to 'high' used to be harmless because 'high' was stricter
+  // than most typos; with 'unknown' in the vocabulary it became a way to LOOSEN
+  // the gate by mistyping — `--fail-on Unknown` passed a build with open
+  // findings. A security gate must never quietly grade itself easier.
+  const failOnRaw = flags['fail-on'];
+  const failOn = failOnRaw === undefined ? 'high' : String(failOnRaw).toLowerCase();
+  if (!FAIL_ON_LEVELS.includes(failOn)) {
+    io.error(`Invalid --fail-on '${failOnRaw}'. Use one of: ${FAIL_ON_LEVELS.join(' | ')}`);
+    return 2;
+  }
   const scanType = (flags.staged || flags.diff) ? 'diff' : 'full';
   const source = flags.source || (flags.staged ? 'pre-commit' : 'cli');
   const output = flags.output === 'json' ? 'json' : 'rich';
@@ -203,6 +231,18 @@ async function cmdScan(flags, restPositionals, io) {
   }
   const alertOnly = flags.mode === 'alert' || Boolean(flags['soft-fail']);
 
+  // Load + validate .shadowspan-suppressions.json BEFORE scanning, so a typo in
+  // the file is reported in a second rather than after a full scan. A config we
+  // cannot parse must never be treated as "no suppressions configured" — a
+  // malformed rule someone believes is protecting them would pass in silence.
+  // (It is APPLIED after the engines run; see the suppression block below.)
+  const suppression = await loadSuppressionFile(repoPath);
+  if (suppression.errors.length) {
+    for (const e of suppression.errors) io.error(`✖ ${e}`);
+    return 2;
+  }
+  for (const w of suppression.warnings) io.error(`  ⚠ ${w}`);
+
   // --staged defaults to local-only (the rotation rule): the pre-commit hook
   // must not require network. --report opts back in; --no-report forces off.
   const wantReport = flags['no-report'] ? false : (flags.report ?? false);
@@ -213,21 +253,41 @@ async function cmdScan(flags, restPositionals, io) {
   // (--staged) stays local-only unless --report. Best-effort; never blocks.
   let engineOpts = {};
   let orgPathExclusions = [];
+  let orgSuppressions = [];
   if (wantReport || !flags.staged) {
     const cfg = await resolveConfig(flags);
     if (cfg.apiKey) {
-      const s = await fetchAppSecSettings({ apiUrl: cfg.apiUrl, apiKey: cfg.apiKey });
+      // Repo identity so the server can resolve scope=REPO suppression rules —
+      // it is keyed by SourceRepository.id, which only the server knows.
+      const { repo } = await collectGitInfo(repoPath).catch(() => ({ repo: null }));
+      const s = await fetchAppSecSettings({ apiUrl: cfg.apiUrl, apiKey: cfg.apiKey, repo });
       if (s) {
         if (s.secretAllowlist?.length) engineOpts.allowlistRegexes = s.secretAllowlist;
         orgPathExclusions = s.pathExclusions || [];
-        if (output !== 'json' && (s.secretAllowlist?.length || orgPathExclusions.length)) {
-          io.error(`  org settings: ${s.secretAllowlist?.length || 0} secret-allowlist, ${orgPathExclusions.length} path-exclusion rule(s)`);
+        orgSuppressions = s.suppressionRules || [];
+        if (output !== 'json' && (s.secretAllowlist?.length || orgPathExclusions.length || orgSuppressions.length)) {
+          io.error(`  org settings: ${s.secretAllowlist?.length || 0} secret-allowlist, `
+            + `${orgPathExclusions.length} path-exclusion, ${orgSuppressions.length} suppression rule(s)`);
         }
       }
     }
   }
 
   if (output !== 'json') io.error(`Scanning ${repoPath} [${engines.join(', ')}]…`);
+  // PREFLIGHT. Prove every requested engine can run before scanning, so "no findings" cannot mean
+  // "the scanner was not installed". A missing binary used to yield a green gate: runEngines
+  // collected the failure into `errors`, and the exit check below only fired when EVERY engine
+  // failed. Verified against the real image — with gitleaks moved aside, a repo containing a live
+  // GitHub token reported "No findings / Gate passed" and exited 0.
+  //
+  // There is deliberately no --skip-preflight. The engine list IS the contract: to scan with fewer
+  // engines, ask for fewer. A flag to proceed anyway would reopen exactly this hole.
+  const pre = await preflight(engines);
+  if (!pre.ok) {
+    io.error(formatPreflightFailure(pre));
+    return 2;
+  }
+
   const { findings: rawFindings, errors } = await runEngines({
     repoPath,
     engines,
@@ -256,6 +316,54 @@ async function cmdScan(flags, restPositionals, io) {
     findings = r.findings;
   }
 
+  // Apply .shadowspan-suppressions.json — per-FINDING suppression with a
+  // mandatory reason + expiry. Distinct from .shadowspanignore on purpose:
+  // silencing one unfixable advisory by excluding its manifest path would also
+  // hide every future advisory in that manifest.
+  //
+  // Suppressed findings are dropped from BOTH the gate and the report, matching
+  // how .shadowspanignore behaves — uploading them would show them as OPEN in the
+  // dashboard (the server does not know about this file) while CI went green, and
+  // a finding that is red in one place and green in the other teaches people to
+  // trust neither. Carrying the acceptance + expiry through to the platform as
+  // evidence is worth doing, but it needs the ingest payload to model it.
+  let suppressedFindings = [];
+  {
+    // Repo file + platform rules are UNIONED. Both are deliberate acceptances by
+    // someone with authority to make them, so either one suppressing is the
+    // answer; requiring both would mean a dashboard acceptance still blocks CI,
+    // which is the split this is here to close.
+    const allRules = [...suppression.rules, ...orgSuppressions];
+    if (allRules.length) {
+      const r = applySuppressions(findings, allRules);
+      findings = r.kept;
+      suppressedFindings = r.suppressed;
+      if (output !== 'json') {
+        if (r.suppressed.length) {
+          io.error(`  ${r.suppressed.length} finding(s) suppressed:`);
+          for (const { finding: f, rule } of r.suppressed) {
+            const where = rule.origin === 'platform'
+              ? `platform (${rule.originScope}-scoped)`
+              : SUPPRESSION_FILENAME;
+            const until = rule.expiresOn
+              ?? (rule.expiresAt ? new Date(rule.expiresAt).toISOString().slice(0, 10) : 'no expiry');
+            // reason/value are attacker-controlled (a repo file, or a platform
+            // rule stored with only trim+slice). Printed raw, a trailing CR plus
+            // padding overwrites this very line, erasing the only record that a
+            // finding was suppressed from the CI log.
+            io.error(`    ${sanitizeForLog(f.ruleId, 100)} — ${where} — until ${until} — ${sanitizeForLog(rule.reason)}`);
+          }
+        }
+        // Only nag about the repo file. A platform rule that matches nothing here
+        // is normal — it may exist for a different repo, or for findings this
+        // engine selection did not produce.
+        for (const rule of r.unusedRules.filter((x) => x.origin !== 'platform')) {
+          io.error(`  ⚠ suppression ${rule.matchType}=${sanitizeForLog(rule.value, 100)} matches nothing — remove it from ${SUPPRESSION_FILENAME}`);
+        }
+      }
+    }
+  }
+
   // ── PR gating ───────────────────────────────────────────────────────────────────────────────
   // With --diff-base, the GATE judges only findings in files this branch changed, while the report
   // still carries EVERYTHING. That split is the point: a repo with pre-existing findings otherwise
@@ -265,14 +373,28 @@ async function cmdScan(flags, restPositionals, io) {
   // Scanning is unchanged — still whole-repo. Scoping the SCAN would be wrong: SCA needs the whole
   // lockfile and IaC needs surrounding context, so a file-limited scan reports different findings,
   // not fewer.
+  //
+  // The base is INFERRED from CI when not given explicitly. It used to be supplied only by the
+  // GitHub Action's entrypoint, so the identical product gated on changed files under GitHub and on
+  // the entire tree under GitLab and Bitbucket — a permanently red pipeline there for any repo with
+  // standing findings. Inference makes the three behave the same. `--no-pr-gate` restores
+  // judging everything, and the chosen base is always printed, so this is never silent.
   let gateFindings = findings;
-  if (flags['diff-base']) {
-    const changed = await changedFiles(repoPath, flags['diff-base']);
+  let diffBase = flags['diff-base'];
+  if (!diffBase && !flags['no-pr-gate']) {
+    const inferred = inferDiffBase();
+    if (inferred) {
+      diffBase = inferred.base;
+      if (output !== 'json') io.error(`  PR gate: base inferred from ${inferred.from} → ${diffBase}`);
+    }
+  }
+  if (diffBase) {
+    const changed = await changedFiles(repoPath, diffBase);
     if (changed === null) {
       // Unknown, not empty. A shallow clone or unresolvable base must NOT silently pass the gate,
       // so fall back to judging everything and say so.
       if (output !== 'json') {
-        io.error(`  diff-base '${flags['diff-base']}' could not be resolved — gating on ALL findings`);
+        io.error(`  diff-base '${diffBase}' could not be resolved — gating on ALL findings`);
         io.error('  (in CI this usually means a shallow checkout; use fetch-depth: 0)');
       }
     } else {
@@ -285,11 +407,22 @@ async function cmdScan(flags, restPositionals, io) {
 
   const gate = evaluateGate(gateFindings, { failOn, softFail: alertOnly });
 
-  io.log(renderResults({ findings, gate, errors, output }));
+  // The gate judges a SUBSET (this PR's changed files) while every renderer lists ALL findings.
+  // Counting the two populations with one number is how the PR comment came to read "5 high" above
+  // a table of 24 HIGH rows. `scope` carries both so nothing has to guess which it was handed;
+  // totals go through evaluateGate too, so there is exactly one counting implementation.
+  const scope = gateFindings === findings ? null : {
+    diffBase,
+    gatedCount: gateFindings.length,
+    totalCount: findings.length,
+    totalBySeverity: evaluateGate(findings, { failOn: 'none' }).bySeverity,
+  };
+
+  io.log(renderResults({ findings, gate, scope, errors, suppressed: suppressedFindings, output }));
 
   // Native report artifacts (token-free; rendered by the SCM's own widgets).
   if (flags.sarif) {
-    await writeFile(flags.sarif, JSON.stringify(toSarif(findings, { version: VERSION }), null, 2));
+    await writeFile(flags.sarif, JSON.stringify(toSarif(findings, { version: VERSION, suppressed: suppressedFindings }), null, 2));
     if (output !== 'json') io.error(`  wrote SARIF → ${flags.sarif}`);
   }
   if (flags['gitlab-report']) {
@@ -309,14 +442,45 @@ async function cmdScan(flags, restPositionals, io) {
       // decorate via the connected App ('platform'); else 'none'. Prevents double-posting.
       const prComment = flags['comment-pr'] ? 'client' : (detectProvider() ? 'platform' : 'none');
       // Report what was SUPPRESSED alongside what was found. Without this the repo-local ignore
-    // file is a silent channel: a rule of `**` turns the pipeline green and the platform sees a
-    // clean scan with no sign anything was dropped. The org exclusion list is NOT included here —
-    // the server applies that itself and already knows it; this is specifically the extra
-    // filtering the RUNNER did on top.
-    const payload = buildPayload({
-      source, repo, commit, scanType, failOn, findings, prComment,
-      suppressed: { count: ignored, rules: suppressedRules },
-    });
+      // file is a silent channel: a rule of `**` turns the pipeline green and the platform sees a
+      // clean scan with no sign anything was dropped. The org exclusion list is NOT included here —
+      // the server applies that itself and already knows it; this is specifically the extra
+      // filtering the RUNNER did on top.
+      //
+      // ACCEPTED-RISK SUPPRESSIONS ARE REPORTED, NOT WITHHELD. They gate locally
+      // but they stay in the payload, for one blunt reason: on a FULL scan the
+      // server closes every finding missing from the payload as REMEDIATED with a
+      // fixedAt (appsec-engine findings.js). Dropping them here would make one
+      // committed suppression file rewrite the customer's history to say a
+      // vulnerability was FIXED when it was only accepted — silent data
+      // corruption of a security record, from a security vendor.
+      //
+      // So the split is deliberate: the repo file is a decision about THIS
+      // PIPELINE's gate, and the platform's own suppression rules are the
+      // platform's decision about its dashboard. An org that wants a finding gone
+      // from both creates a platform rule — which now flows back to the CLI and
+      // gates too, so the two compose instead of contradicting.
+      const reportedFindings = [...findings, ...suppressedFindings.map((s) => s.finding)];
+      const payload = buildPayload({
+        source, repo, commit, scanType, failOn, findings: reportedFindings, prComment,
+        suppressed: {
+          count: ignored + suppressedFindings.length,
+          // Shape is `[{ rule, count }]` — the server drops anything else
+          // (v1/appsec/scans validates defensively), so a plain string list was
+          // silently discarded and the scan recorded a count with no attribution.
+          // Same shape applyIgnore already produces, so the two merge cleanly.
+          rules: [
+            ...suppressedRules,
+            ...Object.entries(
+              suppressedFindings.reduce((acc, { rule }) => {
+                const k = `${rule.matchType}:${rule.value}`;
+                acc[k] = (acc[k] || 0) + 1;
+                return acc;
+              }, {}),
+            ).map(([rule, count]) => ({ rule, count })),
+          ],
+        },
+      });
       const res = await reportScan({ apiUrl, apiKey, payload });
       if (res.ok) io.error(`✓ Reported scan ${res.body?.scanId || ''} to ${apiUrl}`);
       else io.error(`⚠ Report failed (HTTP ${res.status}): ${res.body?.error || 'unknown error'}`);
@@ -327,12 +491,21 @@ async function cmdScan(flags, restPositionals, io) {
   // Best-effort; never affects the exit code.
   if (flags['comment-pr']) {
     let reportUrl;
-    const res = await postPrFeedback({ findings, gate, reportUrl, log: (m) => io.error(m) });
+    const res = await postPrFeedback({ scope, findings, gate, reportUrl, log: (m) => io.error(m) });
     if (res?.skipped && output !== 'json') io.error(`⚠ --comment-pr: ${res.skipped}`);
   }
 
-  // Exit code. All engines failed → can't trust a clean result → error.
-  if (errors.length && errors.length === engines.length) return 2;
+  // Exit code. ANY engine error means the scan is INCOMPLETE, so a passing gate would be a false
+  // statement — not "nothing was found" but "we did not look". The old condition required EVERY
+  // engine to fail before erroring, so one dead engine out of four still exited 0 on a repo with a
+  // live token in it.
+  if (errors.length) {
+    if (output !== 'json') {
+      io.error(`Scan incomplete — ${errors.length} engine(s) failed: ${errors.map((e) => e.engine).join(', ')}`);
+      io.error('  A gate result is not meaningful when an engine did not run.');
+    }
+    return 2;
+  }
   if (gate.blocked) return 1;
   return 0;
 }
@@ -355,7 +528,17 @@ async function cmdDast(flags, restPositionals, io) {
     return 2;
   }
 
-  const failOn = FAIL_ON_LEVELS.includes(String(flags['fail-on'])) ? flags['fail-on'] : 'high';
+  // Normalize case, and REJECT an unrecognized level instead of falling back.
+  // A silent fallback to 'high' used to be harmless because 'high' was stricter
+  // than most typos; with 'unknown' in the vocabulary it became a way to LOOSEN
+  // the gate by mistyping — `--fail-on Unknown` passed a build with open
+  // findings. A security gate must never quietly grade itself easier.
+  const failOnRaw = flags['fail-on'];
+  const failOn = failOnRaw === undefined ? 'high' : String(failOnRaw).toLowerCase();
+  if (!FAIL_ON_LEVELS.includes(failOn)) {
+    io.error(`Invalid --fail-on '${failOnRaw}'. Use one of: ${FAIL_ON_LEVELS.join(' | ')}`);
+    return 2;
+  }
   const output = flags.output === 'json' ? 'json' : 'rich';
   if (flags.mode && !['block', 'alert'].includes(flags.mode)) {
     io.error(`Invalid --mode '${flags.mode}'. Use: block | alert`); return 2;

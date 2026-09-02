@@ -47,3 +47,45 @@ describe('toCodeQuality', () => {
     expect(toCodeQuality(findings)[0].fingerprint).toBe(cq[0].fingerprint); // deterministic
   });
 });
+
+// ── Suppressed findings must remain VISIBLE in machine-readable output ───────
+// A suppressed finding used to vanish from SARIF, --output json and the GitLab
+// report entirely, so a code-scanning upload showed clean and a reviewer could
+// not tell an accepted risk from one that never existed. That is the silent
+// channel .shadowspanignore reporting exists to prevent, reappearing at a
+// different layer.
+describe('toSarif — suppressed results', () => {
+  const open = { ruleId: 'CVE-OPEN', severity: 'HIGH', type: 'SCA', description: 'open one' };
+  const acc = { ruleId: 'CVE-ACCEPTED', severity: 'LOW', type: 'SCA', description: 'accepted one' };
+  const rule = { matchType: 'RULE_ID', value: 'CVE-ACCEPTED', reason: 'not reachable', expiresOn: '2027-03-01' };
+
+  it('emits suppressed findings as results, not as omissions', () => {
+    const s = toSarif([open], { suppressed: [{ finding: acc, rule }] });
+    expect(s.runs[0].results.map((r) => r.ruleId)).toEqual(['CVE-OPEN', 'CVE-ACCEPTED']);
+  });
+
+  it('marks them with SARIF\'s native suppressions[] carrying the justification', () => {
+    const s = toSarif([open], { suppressed: [{ finding: acc, rule }] });
+    const sup = s.runs[0].results.find((r) => r.ruleId === 'CVE-ACCEPTED');
+    expect(sup.suppressions).toEqual([{
+      kind: 'external',
+      justification: 'not reachable',
+      properties: { expiresOn: '2027-03-01' },
+    }]);
+  });
+
+  it('leaves findings that still stand UNsuppressed', () => {
+    const s = toSarif([open], { suppressed: [{ finding: acc, rule }] });
+    expect(s.runs[0].results.find((r) => r.ruleId === 'CVE-OPEN')).not.toHaveProperty('suppressions');
+  });
+
+  it('catalogues rules for suppressed results too, so the SARIF validates', () => {
+    const s = toSarif([open], { suppressed: [{ finding: acc, rule }] });
+    expect(s.runs[0].tool.driver.rules.map((r) => r.id).sort()).toEqual(['CVE-ACCEPTED', 'CVE-OPEN']);
+  });
+
+  it('records a justification even when a rule carries no reason', () => {
+    const s = toSarif([], { suppressed: [{ finding: acc, rule: { ...rule, reason: undefined } }] });
+    expect(s.runs[0].results[0].suppressions[0].justification).toBe('(no reason recorded)');
+  });
+});

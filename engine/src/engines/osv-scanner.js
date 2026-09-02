@@ -14,6 +14,7 @@ import { promisify } from 'node:util';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { scannerEnv } from '../lib/scanner-env.js';
 
 import { normalizeOsvResults } from '../normalize.js';
 import { enrichDependencyDepth } from '../lib/reachability.js';
@@ -42,10 +43,13 @@ const OSV_OFFLINE_ARGS = (process.env.APPSEC_OSV_OFFLINE_ARGS || '--offline-vuln
   .filter(Boolean);
 const OSV_DB_DIR = process.env.APPSEC_OSV_DB_DIR || '/var/osv-db';
 
-/** Child-process env for an osv-scanner run — points the offline DB cache at our mirror. */
+/**
+ * Child-process env for an osv-scanner run — points the offline DB cache at our
+ * mirror, and drops OUR credentials (scannerEnv) so the scanner does not carry
+ * the CLI's write token while parsing a repository we do not trust.
+ */
 function osvEnv() {
-  if (!OSV_OFFLINE) return process.env;
-  return { ...process.env, XDG_CACHE_HOME: OSV_DB_DIR };
+  return OSV_OFFLINE ? scannerEnv(process.env, { XDG_CACHE_HOME: OSV_DB_DIR }) : scannerEnv();
 }
 
 /**
@@ -63,6 +67,28 @@ export async function scanSca(repoPath) {
       '--output-file', reportPath,
       // A repo with zero lockfiles is a valid empty result, not an error.
       '--allow-no-lockfiles',
+      // Go call analysis (govulncheck) is ON BY DEFAULT in osv-scanner v2 and is
+      // disabled here for two independent reasons.
+      //
+      // 1. IT EXECUTES CODE FROM THE REPOSITORY BEING SCANNED. govulncheck loads
+      //    and compiles packages, and osv-scanner's own help warns that call
+      //    analysis "will run build scripts". We scan repositories we do not
+      //    trust — a customer's, and in the dogfood case anything a contributor
+      //    pushed — from CI runners that hold their credentials. A scanner must
+      //    not be an execution vector for the thing it is scanning.
+      //
+      // 2. IT MAKES RESULTS DEPEND ON THE MACHINE. Call analysis silently drops
+      //    "uncalled" advisories when the toolchain matches, and silently keeps
+      //    them when govulncheck fails to load (a Go version mismatch, no Go at
+      //    all). Verified 2026-09-02: identical trees, laptop reports the finding,
+      //    a matching-Go runner would not. A gate whose verdict depends on which
+      //    box ran it is not a gate.
+      //
+      // Reachability is still ours to decide — it is annotated separately
+      // (sca-reachability.js) and recorded EXPLICITLY, with evidence, in
+      // .shadowspan-suppressions.json. An unreachable advisory should be a
+      // reviewed decision, not an invisible side-effect of the runner image.
+      '--no-call-analysis=go',
     ];
     // osv-scanner respects .gitignore by default — correct for both fresh
     // clones (no ignored junk) and dev checkouts (skips node_modules). TRAP
@@ -141,7 +167,7 @@ export async function collectDependencyLicenses(repoPath) {
     ];
     args.push(repoPath);
     try {
-      await execFileAsync('osv-scanner', args, { timeout: LICENSE_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 });
+      await execFileAsync('osv-scanner', args, { env: scannerEnv(), timeout: LICENSE_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 });
     } catch (err) {
       // exit 1 = a license "violation" against the dummy allowlist — the report
       // is still written; only a missing report is a real failure.
