@@ -9,6 +9,7 @@
 //      passing gate on an incomplete scan is a false statement.
 
 import { parseArgs } from 'node:util';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { access, writeFile, chmod } from 'node:fs/promises';
 import { evaluateGate, FAIL_ON_LEVELS, scanDast, scanZap, preflight, formatPreflightFailure } from '../engine/src/index.js';
@@ -26,7 +27,12 @@ import { collectGitInfo, changedFiles, inferDiffBase } from './git-info.js';
 import { resolveConfig, saveAuth, DEFAULT_API_URL } from './config.js';
 import { loadIgnore, applyIgnore, IGNORE_FILENAME } from './ignore.js';
 
-const VERSION = '0.1.0';
+// Read from package.json rather than restated here. The hardcoded copy silently
+// drifted: 0.2.0 shipped to npm printing "0.1.0" for `shadow-span version`, in the
+// --help banner, and in SARIF's tool.driver.version — so uploaded results named the
+// wrong scanner version. A constant that must be updated in lockstep with a manifest
+// is a constant that will not be.
+const VERSION = createRequire(import.meta.url)('../package.json').version;
 
 const HELP = `shadow-span v${VERSION} — run Shadow Span AppSec checks in your pipeline
 

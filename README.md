@@ -122,7 +122,7 @@ Commit a `.shadowspan-suppressions.json` at the repo root:
 
 | Field | | |
 |---|---|---|
-| `matchType` | required | `RULE_ID` (an advisory: `CVE-…`, `GHSA-…`, `GO-…`), `PACKAGE` (a dependency name), or `CWE` |
+| `matchType` | required | `RULE_ID` (an advisory: `CVE-…`, `GHSA-…`, `GO-…`) or `PACKAGE` (a dependency name) |
 | `value` | required | what to match |
 | `expiresAt` | required | `YYYY-MM-DD`, at most 365 days out |
 | `reason` | required | why this is acceptable — the next person to read it is the one deciding whether to renew |
