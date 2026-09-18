@@ -30,3 +30,6 @@ bin/vendor/
 *.swp
 .idea/
 .vscode/
+
+# CI writes this during the self-scan; it is uploaded to code scanning, not committed.
+*.sarif

@@ -1,0 +1,209 @@
+# ════════════════════════════════════════════════════════════════════════════
+# CI — the change-management evidence gate for the published CLI.
+#
+# WHY THIS DID NOT EXIST UNTIL NOW. It should have. Found 2026-09-18 while
+# investigating why the SOC 2 branch-protection control was failing:
+#
+#     GET /repos/Shadow-Span/shadow-span-cli/actions/workflows -> total_count: 0
+#     GET /repos/Shadow-Span/shadow-span-cli/contents/.github/workflows -> 404
+#
+# This is a PUBLIC repository published to npm as @shadow-span/cli, and nothing
+# automated ran on any change. Meanwhile 12 test files and 109 tests already
+# existed and passed — `npm test` worked the whole time, nothing ever called it.
+#
+# TWO THINGS HAD TO BE FIXED BEFORE THIS FILE COULD BE HONEST:
+#   1. `vitest` was not a declared dependency. The suite only ran because `npx`
+#      downloaded it ad hoc, which means every run could pull a different major.
+#      For a package we publish as a security tool, an unpinned test dependency
+#      fetched at runtime is itself a supply-chain problem. It is now an exact
+#      devDependency (5.0.1 — the version the suite was verified green against).
+#   2. There was no lockfile, so `npm ci` could not work at all. There is now.
+#
+# Verified clean-room before committing, not assumed:
+#     rm -rf node_modules && npm ci && npm test  ->  12 files, 109 tests passed
+#     node bin/shadow-span.js scan . --no-report ->  2 MEDIUM, 0 high/critical
+#
+# THAT LOCAL PASS WAS NOT ENOUGH, and the first run of this workflow proved it.
+# The scan job failed on the runner while passing on a laptop, because the CLI
+# shells out to gitleaks / osv-scanner / ast-grep / trivy and a developer machine
+# has them on PATH while a fresh runner does not. The CLI refused to continue
+# rather than report a false green — correct behaviour, and the reason the engine
+# install step below exists. Verifying on the platform you ship to is the whole
+# lesson; a green run somewhere else is not evidence.
+#
+# COST. Unlike the main shadow-span repo — Free plan + PRIVATE, hence 2,000
+# Actions minutes/month and a deliberately minimal pipeline — this repository is
+# PUBLIC, so Actions minutes are unmetered. That is why this runs on pushes to
+# main as well as pull requests, and why the Node matrix is affordable.
+#
+# THE SECURITY SCAN RUNS THE CLI ON ITSELF. Not a bespoke invocation and not a
+# copy of the main repo's appsec.yml — that one resolves `uses:
+# ./actions/appsec-scan`, a path which exists only in the main repo. Here the
+# repository IS the scanner, so CI runs the shipped binary against its own tree.
+# Same argument the main repo makes: if this breaks, the product is broken, and
+# we find out on our own PR instead of a customer's.
+#
+# IT RUNS LOCAL-ONLY BY DESIGN (`--no-report`), which needs no API key. Two
+# reasons, both load-bearing on a PUBLIC repo:
+#   - GitHub does not pass secrets to workflows triggered by a fork's pull
+#     request, so any step requiring SHADOWSPAN_API_KEY would fail for every
+#     outside contributor.
+#   - A gate that cannot run without a secret is a gate that breaks the moment
+#     the secret rotates.
+# Findings still reach a human: they are uploaded as SARIF to GitHub code
+# scanning, which is free on public repositories.
+#
+# TO MAKE THIS A REQUIRED CHECK (which is what the compliance control actually
+# measures — `requiredStatusChecks`), mark these job names required on `main`
+# under Settings -> Branches:
+#     Tests (Node 20)
+#     Tests (Node 22)
+#     Dependency audit
+#     AppSec (self-scan)
+# Branch protection IS available here because the repository is public; on the
+# main repo's Free + private plan it is not.
+# ════════════════════════════════════════════════════════════════════════════
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Least privilege at the workflow level: read the tree, nothing else. The one
+# job that needs more (SARIF upload) asks for it itself, below.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # Node 20 is the floor declared in package.json `engines`, and 22 is current.
+    # Testing the DECLARED MINIMUM is the point: publishing `engines: >=20` while
+    # only ever running 22 is a claim we have not checked.
+    name: Tests (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false # one Node version failing must not hide the other's result
+      matrix:
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # `npm ci` not `npm install` — installs exactly the lockfile, so the run is
+      # reproducible and a drifting transitive dependency cannot turn CI green or
+      # red on its own.
+      - name: Install
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # Fails on high or critical only. The package declares no runtime
+      # dependencies, so in practice this audits the test toolchain — worth
+      # knowing about, but it is not a substitute for the SAST below.
+      - name: npm audit
+        run: npm audit --audit-level=high
+
+  appsec:
+    name: AppSec (self-scan)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write # SARIF upload to code scanning
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # The CLI shells out to four engine binaries and REFUSES to run when any is
+      # missing — "a scan missing an engine cannot honestly report no findings".
+      # That is correct behaviour and it is why the first run of this workflow
+      # failed: a developer machine has these on PATH, a fresh runner does not.
+      #
+      # Versions are PINNED to exactly what actions/appsec-scan/Dockerfile bakes
+      # into the customer-facing Action. If these drift, our own CI and our
+      # customers' scans stop agreeing, which makes this job worthless as a
+      # canary for the product. Keep the two in lockstep.
+      #
+      # GitHub-hosted ubuntu runners are amd64; the Action's Dockerfile carries
+      # the arm64 variants for self-hosted, which are not needed here.
+      - name: Install scan engines (pinned to the shipped Action's versions)
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          OSV_SCANNER_VERSION: 2.3.8
+          TRIVY_VERSION: 0.71.1
+          ASTGREP_VERSION: 0.43.0
+        run: |
+          set -euxo pipefail
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin gitleaks
+          sudo curl -fsSL -o /usr/local/bin/osv-scanner \
+            "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
+          sudo chmod +x /usr/local/bin/osv-scanner
+          curl -fsSL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin trivy
+          npm install -g "@ast-grep/cli@${ASTGREP_VERSION}"
+          # Prove all four resolve before the scan claims anything.
+          gitleaks version && osv-scanner --version && trivy --version && ast-grep --version
+
+      # --fail-on high, deliberately stricter than the main repo's appsec gate,
+      # which runs fail-on: critical and was flagged for it in the 2026-09
+      # readiness review (78 HIGH findings ungated). Measured on this tree
+      # 2026-09-18: 2 MEDIUM, 0 high or critical — so this bar is green today and
+      # a new HIGH will actually stop a merge rather than scroll past.
+      #
+      # The 2 MEDIUMs are both js-weak-hash-sha1 on
+      # src/formats/gitlab-codequality.js, where SHA-1 is a stable FINGERPRINT for
+      # GitLab Code Quality entries, not a security context. That is a false
+      # positive in our own rule and is tracked separately — it is not silenced
+      # here, because suppressing our own FP instead of fixing the rule is how a
+      # scanner loses its users' trust.
+      - name: Scan this repo with the CLI it ships
+        run: node bin/shadow-span.js scan . --no-report --fail-on high --sarif appsec.sarif --source github-action
+
+      # `always()` so findings still reach code scanning on a FAILING gate — the
+      # run that blocks a merge is exactly the one whose findings you want to read.
+      #
+      # The hashFiles guard is not belt-and-braces: when the scan aborts before
+      # writing the report (missing engine, bad flag), `always()` alone still runs
+      # this step and it dies with "Path does not exist: appsec.sarif" — a second,
+      # noisier error on top of the real one. Observed on this workflow's first run.
+      #
+      # Skipped for forks, which have no security-events write scope. The gate
+      # above still runs for them, so an outside PR is scanned, just not recorded.
+      - name: Upload SARIF
+        if: always() && hashFiles('appsec.sarif') != '' && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: appsec.sarif
+          category: shadow-span-appsec
